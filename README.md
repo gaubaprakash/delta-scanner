@@ -66,7 +66,7 @@ python main.py
 
 ## GitHub Actions automation
 
-The `Delta scanner` workflow runs 15-minute scans at :07, :22, :37, and :52; hourly scans at :08; and daily scans at 00:00 UTC (05:30 IST). Add `TELEGRAM_BOT_TOKEN`
+The `Delta scanner` workflow runs 15-minute scans every quarter-hour, starting at 05:30 IST (00:00 UTC); hourly scans at :30 IST; and daily scans at 05:30 IST (00:00 UTC). Add `TELEGRAM_BOT_TOKEN`
 and `TELEGRAM_CHAT_ID` as repository secrets under **Settings → Secrets and variables
 → Actions**. You can also start a scan manually from the repository's **Actions** tab.
 

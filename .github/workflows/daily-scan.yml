@@ -2,8 +2,8 @@ name: Delta scanner
 
 on:
   schedule:
-    - cron: "15,30,45,00 * * * *"
-    - cron: "30 * * * *"
+    - cron: "0,15,30,45 * * * *"
+    - cron: "0 * * * *"
     - cron: "0 0 * * *"
   workflow_dispatch:
 
@@ -36,7 +36,7 @@ jobs:
             delta-state-
 
       - name: Run 15-minute scan
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7,22,37,52 * * * *'
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0,15,30,45 * * * *'
         run: python main.py --once --timeframe 15m
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -47,7 +47,7 @@ jobs:
           BINGX_15M_SYMBOLS: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT
 
       - name: Run hourly scan
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '8 * * * *'
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 * * * *'
         run: python main.py --once --timeframe 1h
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
