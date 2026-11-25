@@ -7,7 +7,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -21,6 +21,7 @@ LOGGER = logging.getLogger("bingx_scanner")
 INTERVAL_SECONDS = 15 * 60
 CANDLE_COUNT = 120
 MIN_CANDLES = 50
+IST_TIMEZONE = timezone(timedelta(hours=5, minutes=30), name="IST")
 TIMEFRAME_SECONDS = {
     "15m": INTERVAL_SECONDS,
     "1h": 60 * 60,
@@ -446,8 +447,8 @@ def _format_messages(signals: list[Signal]) -> list[tuple[str, list[Signal]]]:
             for signal in matching_signals:
                 candle_at = datetime.fromtimestamp(
                     signal.candle_time,
-                    timezone.utc,
-                ).strftime("%Y-%m-%d %H:%M UTC")
+                    IST_TIMEZONE,
+                ).strftime("%Y-%m-%d %H:%M IST")
                 entry = (
                     f"{signal.exchange} | {signal.product.symbol}: "
                     f"{SETUP_LABELS[signal.setup]}\n"
@@ -487,12 +488,14 @@ class Scanner:
         self.dry_run = dry_run
         self.exchange = exchange
         self.timeframe = timeframe
+        self.last_scan_complete = False
+        self.last_scan_matched = False
 
     def _scan_product(self, product: Product, now: int) -> ProductScan | None:
         candles = self.market_data.candles(product.symbol, now)
         if len(candles) < MIN_CANDLES:
             LOGGER.warning(
-                "%s %s skipped: received %d completed candles; need at least %d",
+                "%s %s %s skipped: received %d completed candles; need at least %d",
                 self.exchange,
                 self.timeframe,
                 product.symbol,
@@ -510,6 +513,8 @@ class Scanner:
         )
 
     def scan(self, defer_notifications: bool = False) -> list[Signal]:
+        self.last_scan_complete = False
+        self.last_scan_matched = False
         products = self.market_data.live_products()
         if not products:
             LOGGER.warning(
@@ -517,6 +522,7 @@ class Scanner:
                 self.exchange,
                 self.timeframe,
             )
+            self.last_scan_complete = True
             return []
 
         LOGGER.info(
@@ -530,6 +536,7 @@ class Scanner:
         now = int(time.time())
         scans: list[ProductScan] = []
         failures = 0
+        skipped = 0
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
                 executor.submit(self._scan_product, product, now): product
@@ -550,6 +557,8 @@ class Scanner:
                     continue
                 if result is not None:
                     scans.append(result)
+                else:
+                    skipped += 1
 
         if failures:
             LOGGER.warning(
@@ -560,6 +569,13 @@ class Scanner:
                 failures,
                 len(products),
             )
+
+        self.last_scan_matched = any(
+            matches
+            for result in scans
+            for matches in result.matches.values()
+        )
+        self.last_scan_complete = failures == 0 and skipped == 0
 
         new_signals: list[Signal] = []
         for result in scans:
@@ -634,15 +650,42 @@ class MultiExchangeScanner:
             except (MarketDataApiError, TelegramError) as exc:
                 failures.append(f"{scanner.exchange} {scanner.timeframe}: {exc}")
 
-        if new_signals:
-            self._send_signals(new_signals, selected_scanners)
+        no_match_timeframes = [
+            timeframe
+            for timeframe in ("15m", "1h", "1d")
+            if any(scanner.timeframe == timeframe for scanner in selected_scanners)
+            and all(
+                scanner.last_scan_complete
+                for scanner in selected_scanners
+                if scanner.timeframe == timeframe
+            )
+            and not any(
+                scanner.last_scan_matched
+                for scanner in selected_scanners
+                if scanner.timeframe == timeframe
+            )
+        ]
+        if new_signals or no_match_timeframes:
+            self._send_signals(
+                new_signals,
+                selected_scanners,
+                no_match_timeframes,
+            )
         if failures:
             raise ExchangeScanError(
                 "One or more exchange scans failed: " + "; ".join(failures)
             )
 
-    def _send_signals(self, signals: list[Signal], scanners: list[Scanner]) -> None:
+    def _send_signals(
+        self,
+        signals: list[Signal],
+        scanners: list[Scanner],
+        no_match_timeframes: list[str],
+    ) -> None:
         messages = _format_messages(signals)
+        for timeframe in no_match_timeframes:
+            label = {"15m": "15M", "1h": "1HR", "1d": "1D"}[timeframe]
+            messages.append((f"No matching data on {label} TF", []))
         dry_run = scanners[0].dry_run
         if dry_run:
             print("\n\n".join(message for message, _ in messages))

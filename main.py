@@ -4,15 +4,25 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime
 
 from scanner import (
     ExchangeScanError,
+    IST_TIMEZONE,
     MarketDataApiError,
     TelegramError,
     TIMEFRAME_SECONDS,
     create_scanner,
     print_telegram_chat_ids,
 )
+
+
+class ISTFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        timestamp = datetime.fromtimestamp(record.created, IST_TIMEZONE)
+        if datefmt:
+            return timestamp.strftime(datefmt)
+        return f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')},{int(record.msecs):03d}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,10 +57,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO)
+    formatter = ISTFormatter("%(asctime)s %(levelname)s %(message)s")
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(formatter)
     args = parse_args()
 
     try:

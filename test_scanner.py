@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from io import BytesIO
+import logging
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 from indicators import Indicators, calculate_indicators, matching_setups
+from main import ISTFormatter
 from scanner import (
     AlertStore,
     BingXClient,
@@ -73,14 +75,16 @@ class IndicatorTests(unittest.TestCase):
 class BingXClientTests(unittest.TestCase):
     def test_only_completed_candles_are_used(self) -> None:
         client = BingXClient("https://example.invalid")
-        client._get_json = lambda path, params: {
-            "code": 0,
-            "data": [
-                {"time": 900_000, "close": "10"},
-                {"time": 1_800_000, "close": "11"},
-                {"time": 2_700_000, "close": "12"},
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "code": 0,
+                "data": [
+                    {"time": 900_000, "close": "10"},
+                    {"time": 1_800_000, "close": "11"},
+                    {"time": 2_700_000, "close": "12"},
+                ],
+            }
+        )
 
         self.assertEqual(
             client.candles("BTC-USDT", now=3599),
@@ -133,26 +137,30 @@ class BingXClientTests(unittest.TestCase):
 
     def test_requests_completed_daily_candles(self) -> None:
         client = BingXClient("https://example.invalid", timeframe="1d")
-        client._get_json = lambda path, params: {
-            "code": 0,
-            "data": [
-                {"time": 0, "close": "10"},
-                {"time": 86_400_000, "close": "11"},
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "code": 0,
+                "data": [
+                    {"time": 0, "close": "10"},
+                    {"time": 86_400_000, "close": "11"},
+                ],
+            }
+        )
 
         self.assertEqual(client.candles("BTC-USDT", now=172799), [(0, 10.0)])
 
     def test_only_active_bingx_perpetual_contracts_are_included(self) -> None:
         client = BingXClient("https://example.invalid")
-        client._get_json = lambda path, params: {
-            "code": 0,
-            "data": [
-                {"symbol": "BTC-USDT", "status": 1},
-                {"symbol": "OLD-USDT", "status": 0},
-                {"symbol": "", "status": 1},
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "code": 0,
+                "data": [
+                    {"symbol": "BTC-USDT", "status": 1},
+                    {"symbol": "OLD-USDT", "status": 0},
+                    {"symbol": "", "status": 1},
+                ],
+            }
+        )
 
         with patch.dict("os.environ", {"BINGX_SYMBOLS": ""}):
             self.assertEqual(
@@ -162,14 +170,16 @@ class BingXClientTests(unittest.TestCase):
 
     def test_only_configured_bingx_symbols_are_included(self) -> None:
         client = BingXClient("https://example.invalid")
-        client._get_json = lambda path, params: {
-            "code": 0,
-            "data": [
-                {"symbol": "BTC-USDT", "status": 1},
-                {"symbol": "ETH-USDT", "status": 1},
-                {"symbol": "OLD-USDT", "status": 0},
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "code": 0,
+                "data": [
+                    {"symbol": "BTC-USDT", "status": 1},
+                    {"symbol": "ETH-USDT", "status": 1},
+                    {"symbol": "OLD-USDT", "status": 0},
+                ],
+            }
+        )
 
         with patch.dict("os.environ", {"BINGX_SYMBOLS": "btc-usdt,NOT-LIVE"}):
             self.assertEqual(
@@ -179,13 +189,15 @@ class BingXClientTests(unittest.TestCase):
 
     def test_hourly_bingx_symbol_list_is_independent(self) -> None:
         client = BingXClient("https://example.invalid", timeframe="1h")
-        client._get_json = lambda path, params: {
-            "code": 0,
-            "data": [
-                {"symbol": "BTC-USDT", "status": 1},
-                {"symbol": "ETH-USDT", "status": 1},
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "code": 0,
+                "data": [
+                    {"symbol": "BTC-USDT", "status": 1},
+                    {"symbol": "ETH-USDT", "status": 1},
+                ],
+            }
+        )
 
         with patch.dict(
             "os.environ",
@@ -250,29 +262,31 @@ class DeltaExchangeClientTests(unittest.TestCase):
 
     def test_only_configured_live_perpetuals_are_included(self) -> None:
         client = DeltaExchangeClient("https://example.invalid")
-        client._get_json = lambda path, params: {
-            "success": True,
-            "result": [
-                {
-                    "symbol": "BTCUSD",
-                    "contract_type": "perpetual_futures",
-                    "state": "live",
-                    "trading_status": "operational",
-                },
-                {
-                    "symbol": "ETHUSD",
-                    "contract_type": "perpetual_futures",
-                    "state": "live",
-                    "trading_status": "operational",
-                },
-                {
-                    "symbol": "OLDUSD",
-                    "contract_type": "perpetual_futures",
-                    "state": "expired",
-                    "trading_status": "operational",
-                },
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "success": True,
+                "result": [
+                    {
+                        "symbol": "BTCUSD",
+                        "contract_type": "perpetual_futures",
+                        "state": "live",
+                        "trading_status": "operational",
+                    },
+                    {
+                        "symbol": "ETHUSD",
+                        "contract_type": "perpetual_futures",
+                        "state": "live",
+                        "trading_status": "operational",
+                    },
+                    {
+                        "symbol": "OLDUSD",
+                        "contract_type": "perpetual_futures",
+                        "state": "expired",
+                        "trading_status": "operational",
+                    },
+                ],
+            }
+        )
 
         with patch.dict("os.environ", {"DELTA_SYMBOLS": "BTCUSD,NOTLIVE"}):
             self.assertEqual(
@@ -282,23 +296,25 @@ class DeltaExchangeClientTests(unittest.TestCase):
 
     def test_hourly_delta_symbol_list_is_independent(self) -> None:
         client = DeltaExchangeClient("https://example.invalid", timeframe="1h")
-        client._get_json = lambda path, params: {
-            "success": True,
-            "result": [
-                {
-                    "symbol": "BTCUSD",
-                    "contract_type": "perpetual_futures",
-                    "state": "live",
-                    "trading_status": "operational",
-                },
-                {
-                    "symbol": "ETHUSD",
-                    "contract_type": "perpetual_futures",
-                    "state": "live",
-                    "trading_status": "operational",
-                },
-            ],
-        }
+        client._get_json = Mock(
+            return_value={
+                "success": True,
+                "result": [
+                    {
+                        "symbol": "BTCUSD",
+                        "contract_type": "perpetual_futures",
+                        "state": "live",
+                        "trading_status": "operational",
+                    },
+                    {
+                        "symbol": "ETHUSD",
+                        "contract_type": "perpetual_futures",
+                        "state": "live",
+                        "trading_status": "operational",
+                    },
+                ],
+            }
+        )
 
         with patch.dict(
             "os.environ",
@@ -363,6 +379,16 @@ class AlertStoreTests(unittest.TestCase):
         with patch("scanner.urlopen", side_effect=error):
             with self.assertRaisesRegex(TelegramError, "chat not found"):
                 TelegramClient("token", "chat").send("test")
+
+    def test_log_timestamps_are_formatted_in_ist(self) -> None:
+        record = logging.LogRecord("test", logging.INFO, "", 0, "test", (), None)
+        record.created = 0
+        record.msecs = 0
+
+        self.assertEqual(
+            ISTFormatter("%(asctime)s").formatTime(record),
+            "1970-01-01 05:30:00,000",
+        )
 
     def test_signal_state_persists_and_can_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -442,6 +468,7 @@ class AlertStoreTests(unittest.TestCase):
         self.assertIn("Delta Exchange | BULLUSD", messages[0][0])
         self.assertIn("BingX | BINGX-BULL", messages[0][0])
         self.assertNotIn("BEARUSD", messages[0][0])
+        self.assertIn("Candle: 1970-01-01 05:45 IST", messages[0][0])
         self.assertTrue(messages[1][0].startswith("Crypto 15-minute bearish"))
         self.assertIn("bearish signals", messages[1][0])
         self.assertIn("Delta Exchange | BEARUSD", messages[1][0])
@@ -490,11 +517,16 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 self.exchange = exchange
                 self.timeframe = "15m"
                 self.should_fail = should_fail
+                self.last_scan_complete = False
+                self.last_scan_matched = False
 
             def scan(self, defer_notifications: bool = False) -> list[Signal]:
                 called.append(self.exchange)
+                if not defer_notifications:
+                    raise AssertionError("signals should be collected before sending")
                 if self.should_fail:
                     raise MarketDataApiError("unavailable")
+                self.last_scan_complete = True
                 return []
 
         scanner = MultiExchangeScanner(
@@ -537,8 +569,14 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 self.dry_run = False
                 self.store = FakeStore()
                 self.signal = signal
+                self.last_scan_complete = False
+                self.last_scan_matched = False
 
             def scan(self, defer_notifications: bool = False) -> list[Signal]:
+                if not defer_notifications:
+                    raise AssertionError("signals should be collected before sending")
+                self.last_scan_complete = True
+                self.last_scan_matched = True
                 return [self.signal]
 
         telegram = FakeTelegram()
@@ -571,8 +609,77 @@ class MultiExchangeScannerTests(unittest.TestCase):
         self.assertEqual(scanners[0].store.active, [delta_signal])
         self.assertEqual(scanners[1].store.active, [bingx_signal])
 
+    def test_sends_no_match_status_for_each_completed_timeframe(self) -> None:
+        class FakeTelegram:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            def send(self, message: str) -> None:
+                self.messages.append(message)
+
+        class FakeScanner:
+            def __init__(self, exchange: str, timeframe: str, telegram: FakeTelegram) -> None:
+                self.exchange = exchange
+                self.timeframe = timeframe
+                self.telegram = telegram
+                self.dry_run = False
+                self.store = None
+                self.last_scan_complete = False
+                self.last_scan_matched = False
+
+            def scan(self, defer_notifications: bool = False) -> list[Signal]:
+                if not defer_notifications:
+                    raise AssertionError("signals should be collected before sending")
+                self.last_scan_complete = True
+                return []
+
+        telegram = FakeTelegram()
+        scanners = [
+            FakeScanner(exchange, timeframe, telegram)
+            for timeframe in ("15m", "1h", "1d")
+            for exchange in ("Delta Exchange", "BingX")
+        ]
+
+        MultiExchangeScanner(scanners).scan()
+
+        self.assertEqual(
+            telegram.messages,
+            [
+                "No matching data on 15M TF",
+                "No matching data on 1HR TF",
+                "No matching data on 1D TF",
+            ],
+        )
+
 
 class ScannerTests(unittest.TestCase):
+    def test_short_candle_history_logs_product_and_timeframe(self) -> None:
+        class FakeMarketData:
+            def live_products(self) -> list[Product]:
+                return [Product("THINUSD", "perpetual")]
+
+            def candles(self, symbol: str, now: int) -> list[tuple[int, float]]:
+                if symbol != "THINUSD" or now <= 0:
+                    raise AssertionError("Unexpected product or candle request time")
+                return [(index * 900, 100.0) for index in range(MIN_CANDLES - 1)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = AlertStore(Path(directory) / "state.sqlite3")
+            scanner = Scanner(
+                FakeMarketData(),
+                store,
+                None,
+                dry_run=True,
+                exchange="Delta Exchange",
+                timeframe="15m",
+            )
+
+            with self.assertLogs("bingx_scanner", level="WARNING") as captured:
+                self.assertEqual(scanner.scan(defer_notifications=True), [])
+
+            self.assertIn("Delta Exchange 15m THINUSD skipped", captured.output[0])
+            store.close()
+
     def test_alert_is_once_per_qualifying_episode(self) -> None:
         class FakeBingX:
             def live_products(self) -> list[Product]:
@@ -589,7 +696,16 @@ class ScannerTests(unittest.TestCase):
             result: ProductScan
 
             def _scan_product(self, product: Product, now: int) -> ProductScan:
+                self.assert_scan_matches_requested_product(product, now)
                 return self.result
+
+            def assert_scan_matches_requested_product(
+                self,
+                product: Product,
+                now: int,
+            ) -> None:
+                if product != self.result.product or now <= 0:
+                    raise AssertionError("Unexpected product or scan time")
 
         with tempfile.TemporaryDirectory() as directory:
             store = AlertStore(Path(directory) / "state.sqlite3")
