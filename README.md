@@ -50,6 +50,12 @@ Run continuously, scanning on each 15-minute boundary:
 python main.py
 ```
 
+## GitHub Actions automation
+
+The `Delta scanner` workflow runs one scan every 15 minutes. Add `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID` as repository secrets under **Settings → Secrets and variables
+→ Actions**. You can also start a scan manually from the repository's **Actions** tab.
+
 Run a single scan:
 
 ```powershell
