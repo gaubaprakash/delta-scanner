@@ -21,10 +21,32 @@ LOGGER = logging.getLogger("bingx_scanner")
 INTERVAL_SECONDS = 15 * 60
 CANDLE_COUNT = 120
 MIN_CANDLES = 50
+TIMEFRAME_SECONDS = {
+    "15m": INTERVAL_SECONDS,
+    "1h": 60 * 60,
+    "1d": 24 * 60 * 60,
+}
+TIMEFRAME_LABELS = {"15m": "15-minute", "1h": "1-hour", "1d": "daily"}
+TIMEFRAME_SYMBOL_ENV = {
+    ("delta", "15m"): "DELTA_15M_SYMBOLS",
+    ("delta", "1h"): "DELTA_1H_SYMBOLS",
+    ("delta", "1d"): "DELTA_1D_SYMBOLS",
+    ("bingx", "15m"): "BINGX_15M_SYMBOLS",
+    ("bingx", "1h"): "BINGX_1H_SYMBOLS",
+    ("bingx", "1d"): "BINGX_1D_SYMBOLS",
+}
 SETUP_LABELS = {
     "overbought_bullish": "RSI > 70 and bullish MACD",
     "oversold_bearish": "RSI < 30 and bearish MACD",
 }
+
+
+def _configured_symbols(exchange: str, timeframe: str, legacy_name: str) -> set[str]:
+    variable = TIMEFRAME_SYMBOL_ENV[(exchange, timeframe)]
+    value = os.environ.get(variable)
+    if value is None:
+        value = os.environ.get(legacy_name, "")
+    return {symbol.strip().upper() for symbol in value.split(",") if symbol.strip()}
 
 
 class MarketDataApiError(RuntimeError):
@@ -80,12 +102,23 @@ class Signal:
     setup: str
     candle_time: int
     indicators: Indicators
+    exchange: str = "Delta Exchange"
+    timeframe: str = "15m"
 
 
 class BingXClient:
-    def __init__(self, base_url: str, timeout: int = 20) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 20,
+        timeframe: str = "15m",
+    ) -> None:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.timeframe = timeframe
+        self.interval_seconds = TIMEFRAME_SECONDS[timeframe]
 
     def _get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         query = urlencode(params)
@@ -117,19 +150,33 @@ class BingXClient:
         if not isinstance(rows, list):
             raise MarketDataApiError("BingX contract response did not contain a data list")
 
+        configured_symbols = _configured_symbols("bingx", self.timeframe, "BINGX_SYMBOLS")
         products = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             symbol = row.get("symbol")
-            if row.get("status") == 1 and isinstance(symbol, str) and symbol:
+            if (
+                row.get("status") == 1
+                and isinstance(symbol, str)
+                and symbol
+                and (not configured_symbols or symbol.upper() in configured_symbols)
+            ):
                 products.append(Product(symbol=symbol, contract_type="perpetual"))
+        if configured_symbols:
+            live_symbols = {product.symbol.upper() for product in products}
+            unavailable_symbols = configured_symbols - live_symbols
+            if unavailable_symbols:
+                LOGGER.warning(
+                    "Configured BingX symbols are not active perpetuals: %s",
+                    ", ".join(sorted(unavailable_symbols)),
+                )
         return products
 
     def candles(self, symbol: str, now: int) -> list[tuple[int, float]]:
         payload = self._get_json(
             "/openApi/swap/v2/quote/klines",
-            {"symbol": symbol, "interval": "15m", "limit": CANDLE_COUNT},
+            {"symbol": symbol, "interval": self.timeframe, "limit": CANDLE_COUNT},
         )
         rows = payload.get("data")
         if not isinstance(rows, list):
@@ -148,16 +195,28 @@ class BingXClient:
                 raise MarketDataApiError(
                     f"BingX returned a malformed candle for {symbol}"
                 ) from exc
-            if candle_time_ms + INTERVAL_SECONDS * 1000 <= now * 1000 and close > 0:
+            if (
+                candle_time_ms + self.interval_seconds * 1000 <= now * 1000
+                and close > 0
+            ):
                 candles[candle_time_ms // 1000] = close
 
         return sorted(candles.items())[-CANDLE_COUNT:]
 
 
 class DeltaExchangeClient:
-    def __init__(self, base_url: str, timeout: int = 20) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 20,
+        timeframe: str = "15m",
+    ) -> None:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.timeframe = timeframe
+        self.interval_seconds = TIMEFRAME_SECONDS[timeframe]
 
     def _get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
@@ -189,11 +248,7 @@ class DeltaExchangeClient:
         if not isinstance(rows, list):
             raise MarketDataApiError("Delta Exchange product response did not contain a result list")
 
-        configured_symbols = {
-            symbol.strip().upper()
-            for symbol in os.environ.get("DELTA_SYMBOLS", "").split(",")
-            if symbol.strip()
-        }
+        configured_symbols = _configured_symbols("delta", self.timeframe, "DELTA_SYMBOLS")
         products = []
         for row in rows:
             if not isinstance(row, dict):
@@ -208,13 +263,26 @@ class DeltaExchangeClient:
                 and row.get("trading_status") == "operational"
             ):
                 products.append(Product(symbol=symbol, contract_type="perpetual"))
+        if configured_symbols:
+            live_symbols = {product.symbol.upper() for product in products}
+            unavailable_symbols = configured_symbols - live_symbols
+            if unavailable_symbols:
+                LOGGER.warning(
+                    "Configured Delta symbols are not live perpetuals: %s",
+                    ", ".join(sorted(unavailable_symbols)),
+                )
         return products
 
     def candles(self, symbol: str, now: int) -> list[tuple[int, float]]:
-        start = now - (30 * 60 * 60)
+        start = now - (CANDLE_COUNT * self.interval_seconds)
         payload = self._get_json(
             "/v2/history/candles",
-            {"resolution": "15m", "symbol": symbol, "start": start, "end": now},
+            {
+                "resolution": self.timeframe,
+                "symbol": symbol,
+                "start": start,
+                "end": now,
+            },
         )
         rows = payload.get("result")
         if not isinstance(rows, list):
@@ -233,7 +301,7 @@ class DeltaExchangeClient:
                 raise MarketDataApiError(
                     f"Delta Exchange returned a malformed candle for {symbol}"
                 ) from exc
-            if candle_time + INTERVAL_SECONDS <= now and close > 0:
+            if candle_time + self.interval_seconds <= now and close > 0:
                 candles[candle_time] = close
 
         return sorted(candles.items())[-CANDLE_COUNT:]
@@ -355,31 +423,49 @@ class AlertStore:
 
 
 def _format_messages(signals: list[Signal]) -> list[tuple[str, list[Signal]]]:
-    header = "Crypto 15-minute signal (completed candle)"
     messages: list[tuple[str, list[Signal]]] = []
-    current_batch: list[Signal] = []
-    current = header
-    for signal in signals:
-        candle_at = datetime.fromtimestamp(signal.candle_time, timezone.utc).strftime(
-            "%Y-%m-%d %H:%M UTC"
-        )
-        entry = (
-            f"{signal.product.symbol}: {SETUP_LABELS[signal.setup]}\n"
-            f"RSI {signal.indicators.rsi:.2f} | "
-            f"MACD {signal.indicators.macd:.6g} | "
-            f"signal {signal.indicators.macd_signal:.6g}\n"
-            f"Close {signal.indicators.close:.6g} | "
-            f"EMA50 {signal.indicators.ema50:.6g}\n"
-            f"Candle: {candle_at}"
-        )
-        if len(current) + 2 + len(entry) > 3500 and current != header:
-            messages.append((current, current_batch))
-            current_batch = []
+    for timeframe in ("15m", "1h", "1d"):
+        for direction, setup in (
+            ("Bullish", "overbought_bullish"),
+            ("Bearish", "oversold_bearish"),
+        ):
+            header = (
+                f"Crypto {TIMEFRAME_LABELS[timeframe]} "
+                f"{direction.lower()} signals (completed candle)"
+            )
+            current_batch: list[Signal] = []
             current = header
-        current += f"\n\n{entry}"
-        current_batch.append(signal)
-    if current != header:
-        messages.append((current, current_batch))
+            matching_signals = sorted(
+                (
+                    signal
+                    for signal in signals
+                    if signal.timeframe == timeframe and signal.setup == setup
+                ),
+                key=lambda signal: (signal.exchange, signal.product.symbol),
+            )
+            for signal in matching_signals:
+                candle_at = datetime.fromtimestamp(
+                    signal.candle_time,
+                    timezone.utc,
+                ).strftime("%Y-%m-%d %H:%M UTC")
+                entry = (
+                    f"{signal.exchange} | {signal.product.symbol}: "
+                    f"{SETUP_LABELS[signal.setup]}\n"
+                    f"RSI {signal.indicators.rsi:.2f} | "
+                    f"MACD {signal.indicators.macd:.6g} | "
+                    f"signal {signal.indicators.macd_signal:.6g}\n"
+                    f"Close {signal.indicators.close:.6g} | "
+                    f"EMA50 {signal.indicators.ema50:.6g}\n"
+                    f"Candle: {candle_at}"
+                )
+                if len(current) + 2 + len(entry) > 3500 and current != header:
+                    messages.append((current, current_batch))
+                    current_batch = []
+                    current = header
+                current += f"\n\n{entry}"
+                current_batch.append(signal)
+            if current != header:
+                messages.append((current, current_batch))
     return messages
 
 
@@ -390,17 +476,25 @@ class Scanner:
         store: AlertStore,
         telegram: TelegramClient | None,
         dry_run: bool = False,
+        exchange: str = "Delta Exchange",
+        timeframe: str = "15m",
     ) -> None:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
         self.market_data = market_data
         self.store = store
         self.telegram = telegram
         self.dry_run = dry_run
+        self.exchange = exchange
+        self.timeframe = timeframe
 
     def _scan_product(self, product: Product, now: int) -> ProductScan | None:
         candles = self.market_data.candles(product.symbol, now)
         if len(candles) < MIN_CANDLES:
             LOGGER.warning(
-                "%s skipped: received %d completed candles; need at least %d",
+                "%s %s skipped: received %d completed candles; need at least %d",
+                self.exchange,
+                self.timeframe,
                 product.symbol,
                 len(candles),
                 MIN_CANDLES,
@@ -415,11 +509,23 @@ class Scanner:
             matches=matching_setups(indicators),
         )
 
-    def scan(self) -> None:
+    def scan(self, defer_notifications: bool = False) -> list[Signal]:
         products = self.market_data.live_products()
         if not products:
-            LOGGER.warning("BingX returned no live perpetual contracts")
-            return
+            LOGGER.warning(
+                "%s %s returned no live perpetual contracts",
+                self.exchange,
+                self.timeframe,
+            )
+            return []
+
+        LOGGER.info(
+            "%s %s: checking %d live perpetual contracts: %s",
+            self.exchange,
+            self.timeframe,
+            len(products),
+            ", ".join(sorted(product.symbol for product in products)),
+        )
 
         now = int(time.time())
         scans: list[ProductScan] = []
@@ -435,15 +541,22 @@ class Scanner:
                     result = future.result()
                 except MarketDataApiError as exc:
                     failures += 1
-                    LOGGER.warning("%s candle scan failed: %s", product.symbol, exc)
+                    LOGGER.warning(
+                        "%s %s candle scan failed: %s",
+                        self.exchange,
+                        product.symbol,
+                        exc,
+                    )
                     continue
                 if result is not None:
                     scans.append(result)
 
         if failures:
             LOGGER.warning(
-                "%d of %d contract candle requests failed; existing alerts for those "
-                "products were left unchanged",
+                "%s %s: %d of %d contract candle requests failed; existing alerts "
+                "for those products were left unchanged",
+                self.exchange,
+                self.timeframe,
                 failures,
                 len(products),
             )
@@ -460,20 +573,27 @@ class Scanner:
                             setup=setup,
                             candle_time=result.candle_time,
                             indicators=result.indicators,
+                            exchange=self.exchange,
+                            timeframe=self.timeframe,
                         )
                     )
 
         if not new_signals:
-            LOGGER.info(
-                "Scan complete: %d contracts checked, no new signals",
-                len(scans),
-            )
-            return
+            if not defer_notifications:
+                LOGGER.info(
+                        "%s %s scan complete: %d contracts checked, no new signals",
+                        self.exchange,
+                        self.timeframe,
+                    len(scans),
+                )
+            return []
 
+        if defer_notifications:
+            return new_signals
         if self.dry_run:
             print("\n\n".join(message for message, _ in _format_messages(new_signals)))
             LOGGER.info("Dry run: %d new signals; no alerts or state changes", len(new_signals))
-            return
+            return new_signals
         if self.telegram is None:
             raise TelegramError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to send alerts")
 
@@ -482,11 +602,85 @@ class Scanner:
             self.telegram.send(message)
             self.store.set_active(batch)
         LOGGER.info(
-            "Scan complete: %d contracts checked, sent %d new signals in %d messages",
+            "%s %s scan complete: %d contracts checked, sent %d new signals in %d messages",
+            self.exchange,
+            self.timeframe,
             len(scans),
             len(new_signals),
             len(messages),
         )
+        return new_signals
+
+
+class ExchangeScanError(RuntimeError):
+    pass
+
+
+class MultiExchangeScanner:
+    def __init__(self, scanners: list[Scanner]) -> None:
+        self.scanners = scanners
+
+    def scan(self, timeframes: set[str] | None = None) -> None:
+        failures: list[str] = []
+        new_signals: list[Signal] = []
+        selected_scanners = [
+            scanner
+            for scanner in self.scanners
+            if timeframes is None or scanner.timeframe in timeframes
+        ]
+        for scanner in selected_scanners:
+            try:
+                new_signals.extend(scanner.scan(defer_notifications=True))
+            except (MarketDataApiError, TelegramError) as exc:
+                failures.append(f"{scanner.exchange} {scanner.timeframe}: {exc}")
+
+        if new_signals:
+            self._send_signals(new_signals, selected_scanners)
+        if failures:
+            raise ExchangeScanError(
+                "One or more exchange scans failed: " + "; ".join(failures)
+            )
+
+    def _send_signals(self, signals: list[Signal], scanners: list[Scanner]) -> None:
+        messages = _format_messages(signals)
+        dry_run = scanners[0].dry_run
+        if dry_run:
+            print("\n\n".join(message for message, _ in messages))
+            LOGGER.info(
+                "Dry run: %d new signals; no alerts or state changes",
+                len(signals),
+            )
+            return
+
+        telegram = scanners[0].telegram
+        if telegram is None:
+            raise TelegramError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to send alerts")
+
+        for message, batch in messages:
+            telegram.send(message)
+            for scanner in scanners:
+                exchange_batch = [
+                    signal
+                    for signal in batch
+                    if signal.exchange == scanner.exchange
+                    and signal.timeframe == scanner.timeframe
+                ]
+                if exchange_batch:
+                    scanner.store.set_active(exchange_batch)
+        LOGGER.info(
+            "Combined scan complete: sent %d new signals in %d messages",
+            len(signals),
+            len(messages),
+        )
+
+
+class AlertStoreCollection:
+    def __init__(self, stores: list[AlertStore]) -> None:
+        self.stores = stores
+
+    def close(self) -> None:
+        for store in self.stores:
+            store.close()
 
 
 def telegram_client_from_environment() -> TelegramClient:
@@ -508,31 +702,60 @@ def print_telegram_chat_ids() -> None:
     TelegramClient(token, "").print_chat_ids()
 
 
-def wait_for_next_scan() -> None:
-    now = time.time()
-    next_scan = (int(now // INTERVAL_SECONDS) + 1) * INTERVAL_SECONDS
-    time.sleep(max(1, next_scan - now))
-
-
-def create_scanner(dry_run: bool = False) -> tuple[Scanner, AlertStore]:
+def create_scanner(
+    dry_run: bool = False,
+    timeframes: tuple[str, ...] | None = None,
+) -> tuple[MultiExchangeScanner, AlertStoreCollection]:
+    load_environment_file()
     telegram = None if dry_run else telegram_client_from_environment()
-    exchange = os.environ.get("SCANNER_EXCHANGE", "delta").strip().lower()
-    if exchange == "delta":
-        base_url = os.environ.get(
-            "DELTA_API_BASE_URL",
-            "https://api.india.delta.exchange",
-        ).strip()
-        if not base_url.startswith("https://"):
-            raise ValueError("DELTA_API_BASE_URL must use HTTPS")
-        store = AlertStore(Path(__file__).with_name("delta_scanner_state.sqlite3"))
-        return Scanner(DeltaExchangeClient(base_url), store, telegram, dry_run), store
-    if exchange == "bingx":
-        base_url = os.environ.get(
-            "BINGX_API_BASE_URL",
-            "https://open-api.bingx.com",
-        ).strip()
-        if not base_url.startswith("https://"):
-            raise ValueError("BINGX_API_BASE_URL must use HTTPS")
-        store = AlertStore(Path(__file__).with_name("bingx_scanner_state.sqlite3"))
-        return Scanner(BingXClient(base_url), store, telegram, dry_run), store
-    raise ValueError("SCANNER_EXCHANGE must be 'delta' or 'bingx'")
+    selected_timeframes = timeframes or tuple(TIMEFRAME_SECONDS)
+    if any(timeframe not in TIMEFRAME_SECONDS for timeframe in selected_timeframes):
+        raise ValueError(f"Unsupported timeframe in {selected_timeframes}")
+    delta_base_url = os.environ.get(
+        "DELTA_API_BASE_URL",
+        "https://api.india.delta.exchange",
+    ).strip()
+    bingx_base_url = os.environ.get(
+        "BINGX_API_BASE_URL",
+        "https://open-api.bingx.com",
+    ).strip()
+    if not delta_base_url.startswith("https://"):
+        raise ValueError("DELTA_API_BASE_URL must use HTTPS")
+    if not bingx_base_url.startswith("https://"):
+        raise ValueError("BINGX_API_BASE_URL must use HTTPS")
+
+    directory = Path(__file__).parent
+    state_paths = {
+        "15m": {
+            "Delta Exchange": "delta_scanner_state.sqlite3",
+            "BingX": "bingx_scanner_state.sqlite3",
+        },
+        "1h": {
+            "Delta Exchange": "delta_scanner_1h_state.sqlite3",
+            "BingX": "bingx_scanner_1h_state.sqlite3",
+        },
+        "1d": {
+            "Delta Exchange": "delta_scanner_1d_state.sqlite3",
+            "BingX": "bingx_scanner_1d_state.sqlite3",
+        },
+    }
+    stores: list[AlertStore] = []
+    scanners: list[Scanner] = []
+    for timeframe in selected_timeframes:
+        for exchange, base_url, client_type in (
+            ("Delta Exchange", delta_base_url, DeltaExchangeClient),
+            ("BingX", bingx_base_url, BingXClient),
+        ):
+            store = AlertStore(directory / state_paths[timeframe][exchange])
+            stores.append(store)
+            scanners.append(
+                Scanner(
+                    client_type(base_url, timeframe=timeframe),
+                    store,
+                    telegram,
+                    dry_run,
+                    exchange,
+                    timeframe,
+                )
+            )
+    return MultiExchangeScanner(scanners), AlertStoreCollection(stores)
