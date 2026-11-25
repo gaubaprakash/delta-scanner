@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from indicators import Indicators, calculate_indicators, matching_setups
 from scanner import (
@@ -13,6 +16,8 @@ from scanner import (
     ProductScan,
     Scanner,
     Signal,
+    TelegramClient,
+    TelegramError,
     _format_messages,
     load_environment_file,
 )
@@ -158,6 +163,18 @@ class EnvironmentFileTests(unittest.TestCase):
 
 
 class AlertStoreTests(unittest.TestCase):
+    def test_telegram_http_errors_include_api_description(self) -> None:
+        error = HTTPError(
+            "https://api.telegram.org/botTOKEN/sendMessage",
+            400,
+            "Bad Request",
+            None,
+            BytesIO(b'{"ok":false,"description":"Bad Request: chat not found"}'),
+        )
+        with patch("scanner.urlopen", side_effect=error):
+            with self.assertRaisesRegex(TelegramError, "chat not found"):
+                TelegramClient("token", "chat").send("test")
+
     def test_signal_state_persists_and_can_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"

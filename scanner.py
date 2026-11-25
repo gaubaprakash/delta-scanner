@@ -257,7 +257,19 @@ class TelegramClient:
             with urlopen(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read())
         except HTTPError as exc:
-            raise TelegramError(f"Telegram {method} returned HTTP {exc.code}") from exc
+            try:
+                error_payload = json.loads(exc.read())
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                error_payload = {}
+            description = (
+                error_payload.get("description")
+                if isinstance(error_payload, dict)
+                else None
+            )
+            detail = f": {description}" if isinstance(description, str) else ""
+            raise TelegramError(
+                f"Telegram {method} returned HTTP {exc.code}{detail}"
+            ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise TelegramError(
                 f"Telegram {method} request failed ({type(exc).__name__})"
