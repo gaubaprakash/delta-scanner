@@ -352,9 +352,22 @@ class TelegramClient:
         return payload
 
     def send(self, message: str) -> None:
-        self._request(
+        payload = self._request(
             "sendMessage",
             {"chat_id": self.chat_id, "text": message, "disable_web_page_preview": True},
+        )
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise TelegramError("Telegram sendMessage response omitted message details")
+        chat = result.get("chat")
+        message_id = result.get("message_id")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if not isinstance(message_id, int) or not isinstance(chat_id, int):
+            raise TelegramError("Telegram sendMessage response omitted message or chat ID")
+        LOGGER.info(
+            "Telegram accepted message_id=%d for chat_id=%d",
+            message_id,
+            chat_id,
         )
 
     def print_chat_ids(self) -> None:

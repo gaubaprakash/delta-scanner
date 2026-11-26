@@ -368,6 +368,32 @@ class EnvironmentFileTests(unittest.TestCase):
 
 
 class AlertStoreTests(unittest.TestCase):
+    def test_telegram_send_logs_api_confirmed_chat_and_message_ids(self) -> None:
+        client = TelegramClient("token", "-123")
+        with patch.object(
+            client,
+            "_request",
+            return_value={
+                "ok": True,
+                "result": {
+                    "message_id": 456,
+                    "chat": {"id": -123},
+                },
+            },
+        ) as request:
+            with self.assertLogs("bingx_scanner", level="INFO") as logs:
+                client.send("test")
+
+        request.assert_called_once_with(
+            "sendMessage",
+            {
+                "chat_id": "-123",
+                "text": "test",
+                "disable_web_page_preview": True,
+            },
+        )
+        self.assertIn("message_id=456 for chat_id=-123", logs.output[0])
+
     def test_telegram_http_errors_include_api_description(self) -> None:
         error = HTTPError(
             "https://api.telegram.org/botTOKEN/sendMessage",
