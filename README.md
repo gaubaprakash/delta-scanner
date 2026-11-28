@@ -5,7 +5,7 @@ This standalone Python service scans configured Delta Exchange, BingX, and Binan
 - RSI > 70, MACD line > MACD signal line, and candle close > EMA(50).
 - RSI < 30, MACD line < MACD signal line, and candle close < EMA(50).
 
-Bullish and bearish signals are sent in separate messages, labeled with their exchange and timeframe. It scans 15-minute candles every 15 minutes, hourly candles once per hour, and daily candles once per day. A signal is sent once while the condition remains true for that exchange, symbol, and timeframe; it can alert again if the condition first becomes false and later true again. Alert state is stored separately for each exchange and timeframe.
+Signal and no-match notices are grouped by exchange and timeframe. A no-match notice is sent only after a complete scan finds no qualifying conditions; failed or unavailable market data is not reported as a no-match. It scans 15-minute candles every 15 minutes, hourly candles once per hour, and daily candles once per day. A signal is sent once while the condition remains true for that exchange, symbol, and timeframe; it can alert again if the condition first becomes false and later true again. Alert state is stored separately for each exchange and timeframe.
 
 The scanner uses the exchanges' public market-data endpoints and does not place trades or require an API key:
 

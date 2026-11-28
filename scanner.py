@@ -681,35 +681,46 @@ class AlertStore:
         self.connection.close()
 
 
-def _format_messages(signals: list[Signal]) -> list[tuple[str, list[Signal]]]:
+def _format_messages(
+    signals: list[Signal],
+    no_match_pairs: set[tuple[str, str]] | None = None,
+) -> list[tuple[str, list[Signal]]]:
     messages: list[tuple[str, list[Signal]]] = []
+    no_match_pairs = no_match_pairs or set()
     for timeframe in ("15m", "1h", "1d"):
-        for direction, setup in (
-            ("Bullish", "overbought_bullish"),
-            ("Bearish", "oversold_bearish"),
-        ):
-            header = (
-                f"Crypto {TIMEFRAME_LABELS[timeframe]} "
-                f"{direction.lower()} signals (completed candle)"
-            )
-            current_batch: list[Signal] = []
-            current = header
+        for exchange in ("Delta Exchange", "BingX", "Binance USD-M Futures"):
             matching_signals = sorted(
                 (
                     signal
                     for signal in signals
-                    if signal.timeframe == timeframe and signal.setup == setup
+                    if signal.timeframe == timeframe and signal.exchange == exchange
                 ),
-                key=lambda signal: (signal.exchange, signal.product.symbol),
+                key=lambda signal: signal.product.symbol,
             )
+            if not matching_signals:
+                if (exchange, timeframe) in no_match_pairs:
+                    messages.append(
+                        (
+                            f"{exchange} | {TIMEFRAME_LABELS[timeframe]}: "
+                            "No matching signals for configured symbols.",
+                            [],
+                        )
+                    )
+                continue
+
+            header = (
+                f"{exchange} | {TIMEFRAME_LABELS[timeframe]} "
+                "signals (completed candle)"
+            )
+            current_batch: list[Signal] = []
+            current = header
             for signal in matching_signals:
                 candle_at = datetime.fromtimestamp(
                     signal.candle_time,
                     IST_TIMEZONE,
                 ).strftime("%Y-%m-%d %H:%M IST")
                 entry = (
-                    f"{signal.exchange} | {signal.product.symbol}: "
-                    f"{SETUP_LABELS[signal.setup]}\n"
+                    f"{signal.product.symbol}: {SETUP_LABELS[signal.setup]}\n"
                     f"RSI {signal.indicators.rsi:.2f} | "
                     f"MACD {signal.indicators.macd:.6g} | "
                     f"signal {signal.indicators.macd_signal:.6g}\n"
@@ -780,7 +791,6 @@ class Scanner:
                 self.exchange,
                 self.timeframe,
             )
-            self.last_scan_complete = True
             return []
 
         LOGGER.info(
@@ -908,8 +918,13 @@ class MultiExchangeScanner:
             except (MarketDataApiError, TelegramError) as exc:
                 failures.append(f"{scanner.exchange} {scanner.timeframe}: {exc}")
 
-        if new_signals:
-            self._send_signals(new_signals, selected_scanners)
+        no_match_pairs = {
+            (scanner.exchange, scanner.timeframe)
+            for scanner in selected_scanners
+            if scanner.last_scan_complete and not scanner.last_scan_matched
+        }
+        if new_signals or no_match_pairs:
+            self._send_signals(new_signals, selected_scanners, no_match_pairs)
         if failures:
             raise ExchangeScanError(
                 "One or more exchange scans failed: " + "; ".join(failures)
@@ -919,8 +934,9 @@ class MultiExchangeScanner:
         self,
         signals: list[Signal],
         scanners: list[Scanner],
+        no_match_pairs: set[tuple[str, str]],
     ) -> None:
-        messages = _format_messages(signals)
+        messages = _format_messages(signals, no_match_pairs)
         dry_run = scanners[0].dry_run
         if dry_run:
             print("\n\n".join(message for message, _ in messages))

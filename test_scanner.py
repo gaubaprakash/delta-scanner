@@ -627,14 +627,14 @@ class AlertStoreTests(unittest.TestCase):
         self.assertTrue(
             all(
                 message.startswith(
-                    "Crypto 15-minute bullish signals (completed candle)\n\n"
+                    "Delta Exchange | 15-minute signals (completed candle)\n\n"
                 )
                 for message, _ in messages
             )
         )
         self.assertEqual(sum(len(batch) for _, batch in messages), len(signals))
 
-    def test_bullish_and_bearish_signals_are_separate_messages(self) -> None:
+    def test_messages_are_grouped_by_exchange_and_timeframe(self) -> None:
         signals = [
             Signal(
                 product=Product("BULLUSD", "perpetual"),
@@ -660,23 +660,37 @@ class AlertStoreTests(unittest.TestCase):
         messages = _format_messages(signals)
 
         self.assertEqual(len(messages), 2)
-        self.assertTrue(messages[0][0].startswith("Crypto 15-minute bullish"))
-        self.assertIn("bullish signals", messages[0][0])
-        self.assertIn("Delta Exchange | BULLUSD", messages[0][0])
-        self.assertIn("BingX | BINGX-BULL", messages[0][0])
-        self.assertNotIn("BEARUSD", messages[0][0])
+        self.assertTrue(
+            messages[0][0].startswith(
+                "Delta Exchange | 15-minute signals (completed candle)"
+            )
+        )
+        self.assertIn("BULLUSD: RSI > 70 and bullish MACD", messages[0][0])
+        self.assertIn("BEARUSD: RSI < 30 and bearish MACD", messages[0][0])
         self.assertIn("Candle: 1970-01-01 05:45 IST", messages[0][0])
-        self.assertTrue(messages[1][0].startswith("Crypto 15-minute bearish"))
-        self.assertIn("bearish signals", messages[1][0])
-        self.assertIn("Delta Exchange | BEARUSD", messages[1][0])
+        self.assertTrue(
+            messages[1][0].startswith(
+                "BingX | 15-minute signals (completed candle)"
+            )
+        )
+        self.assertIn("BINGX-BULL: RSI > 70 and bullish MACD", messages[1][0])
+        self.assertNotIn("BEARUSD", messages[1][0])
 
-    def test_signals_are_grouped_by_timeframe(self) -> None:
+    def test_signals_are_grouped_by_exchange_and_timeframe(self) -> None:
         signals = [
             Signal(
                 Product("BTCUSD", "perpetual"),
                 "overbought_bullish",
                 900,
                 Indicators(75, 2, 1, 101, 100),
+                timeframe="15m",
+            ),
+            Signal(
+                Product("XRPUSDT", "perpetual"),
+                "oversold_bearish",
+                900,
+                Indicators(25, -2, -1, 99, 100),
+                exchange="Binance USD-M Futures",
                 timeframe="15m",
             ),
             Signal(
@@ -698,11 +712,13 @@ class AlertStoreTests(unittest.TestCase):
 
         messages = _format_messages(signals)
 
-        self.assertEqual(len(messages), 3)
-        self.assertIn("15-minute bullish", messages[0][0])
-        self.assertIn("1-hour bullish", messages[1][0])
-        self.assertIn("BingX | ETH-USDT", messages[1][0])
-        self.assertIn("daily bearish", messages[2][0])
+        self.assertEqual(len(messages), 4)
+        self.assertTrue(messages[0][0].startswith("Delta Exchange | 15-minute"))
+        self.assertTrue(messages[1][0].startswith("Binance USD-M Futures | 15-minute"))
+        self.assertIn("XRPUSDT:", messages[1][0])
+        self.assertTrue(messages[2][0].startswith("BingX | 1-hour"))
+        self.assertIn("ETH-USDT:", messages[2][0])
+        self.assertTrue(messages[3][0].startswith("Delta Exchange | daily"))
 
 
 class MultiExchangeScannerTests(unittest.TestCase):
@@ -724,6 +740,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 if self.should_fail:
                     raise MarketDataApiError("unavailable")
                 self.last_scan_complete = True
+                self.last_scan_matched = True
                 return []
 
         scanner = MultiExchangeScanner(
@@ -738,7 +755,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
 
         self.assertEqual(called, ["Delta Exchange", "BingX"])
 
-    def test_sends_combined_bullish_and_bearish_messages_with_exchange_labels(self) -> None:
+    def test_sends_exchange_and_timeframe_grouped_messages(self) -> None:
         class FakeTelegram:
             def __init__(self) -> None:
                 self.messages: list[str] = []
@@ -799,14 +816,16 @@ class MultiExchangeScannerTests(unittest.TestCase):
         MultiExchangeScanner(scanners).scan()
 
         self.assertEqual(len(telegram.messages), 2)
-        self.assertIn("Delta Exchange | BTCUSD", telegram.messages[0])
+        self.assertTrue(telegram.messages[0].startswith("Delta Exchange | 15-minute"))
+        self.assertIn("BTCUSD:", telegram.messages[0])
         self.assertIn("bullish", telegram.messages[0])
-        self.assertIn("BingX | ETH-USDT", telegram.messages[1])
+        self.assertTrue(telegram.messages[1].startswith("BingX | 15-minute"))
+        self.assertIn("ETH-USDT:", telegram.messages[1])
         self.assertIn("bearish", telegram.messages[1])
         self.assertEqual(scanners[0].store.active, [delta_signal])
         self.assertEqual(scanners[1].store.active, [bingx_signal])
 
-    def test_sends_no_messages_when_no_signals_match(self) -> None:
+    def test_sends_no_match_notices_per_exchange_and_timeframe(self) -> None:
         class FakeTelegram:
             def __init__(self) -> None:
                 self.messages: list[str] = []
@@ -839,7 +858,17 @@ class MultiExchangeScannerTests(unittest.TestCase):
 
         MultiExchangeScanner(scanners).scan()
 
-        self.assertEqual(telegram.messages, [])
+        self.assertEqual(
+            telegram.messages,
+            [
+                "Delta Exchange | 15-minute: No matching signals for configured symbols.",
+                "BingX | 15-minute: No matching signals for configured symbols.",
+                "Delta Exchange | 1-hour: No matching signals for configured symbols.",
+                "BingX | 1-hour: No matching signals for configured symbols.",
+                "Delta Exchange | daily: No matching signals for configured symbols.",
+                "BingX | daily: No matching signals for configured symbols.",
+            ],
+        )
 
 
 class ScannerTests(unittest.TestCase):
