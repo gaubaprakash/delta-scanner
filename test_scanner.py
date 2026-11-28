@@ -28,6 +28,7 @@ from scanner import (
     _configured_symbols,
     _format_messages,
     _google_sheet_symbol_config,
+    _no_match_reason,
     load_environment_file,
 )
 
@@ -73,6 +74,23 @@ class IndicatorTests(unittest.TestCase):
         self.assertFalse(matching_setups(below_ema)["overbought_bullish"])
         self.assertFalse(matching_setups(above_ema)["oversold_bearish"])
         self.assertFalse(matching_setups(on_ema)["overbought_bullish"])
+
+    def test_no_match_reason_lists_each_failed_check_with_values(self) -> None:
+        indicators = Indicators(50, 1, 2, 100, 99)
+        scan = ProductScan(
+            Product("TESTUSD", "perpetual"),
+            900,
+            indicators,
+            matching_setups(indicators),
+        )
+
+        self.assertEqual(
+            _no_match_reason([scan]),
+            "Checked 1 completed symbol; none met all conditions for either setup. "
+            "TESTUSD: bullish blocked by RSI 50 is not > 70, MACD 1 is not > "
+            "signal 2; bearish blocked by RSI 50 is not < 30, Close 100 is not "
+            "< EMA50 99",
+        )
 
 
 class BingXClientTests(unittest.TestCase):
@@ -732,6 +750,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 self.should_fail = should_fail
                 self.last_scan_complete = False
                 self.last_scan_matched = False
+                self.last_no_match_reason = ""
 
             def scan(self, defer_notifications: bool = False) -> list[Signal]:
                 called.append(self.exchange)
@@ -741,6 +760,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
                     raise MarketDataApiError("unavailable")
                 self.last_scan_complete = True
                 self.last_scan_matched = True
+                self.last_no_match_reason = ""
                 return []
 
         scanner = MultiExchangeScanner(
@@ -754,6 +774,49 @@ class MultiExchangeScannerTests(unittest.TestCase):
             scanner.scan()
 
         self.assertEqual(called, ["Delta Exchange", "BingX"])
+        self.assertEqual(
+            scanner.last_incomplete_pairs,
+            {("Delta Exchange", "15m")},
+        )
+
+    def test_retries_only_incomplete_exchange_timeframes(self) -> None:
+        called: list[str] = []
+
+        class FakeScanner:
+            def __init__(self, exchange: str, should_fail: bool) -> None:
+                self.exchange = exchange
+                self.timeframe = "15m"
+                self.should_fail = should_fail
+                self.last_scan_complete = False
+                self.last_scan_matched = False
+                self.last_no_match_reason = ""
+
+            def scan(self, defer_notifications: bool = False) -> list[Signal]:
+                if not defer_notifications:
+                    raise AssertionError("signals should be collected before sending")
+                called.append(self.exchange)
+                if self.should_fail:
+                    raise MarketDataApiError("temporarily unavailable")
+                self.last_scan_complete = True
+                self.last_scan_matched = True
+                return []
+
+        delta = FakeScanner("Delta Exchange", True)
+        bingx = FakeScanner("BingX", False)
+        scanner = MultiExchangeScanner([delta, bingx])
+
+        with self.assertRaises(ExchangeScanError):
+            scanner.scan()
+
+        self.assertEqual(
+            scanner.last_incomplete_pairs,
+            {("Delta Exchange", "15m")},
+        )
+        delta.should_fail = False
+        scanner.scan({"15m"})
+
+        self.assertEqual(called, ["Delta Exchange", "BingX", "Delta Exchange"])
+        self.assertEqual(scanner.last_incomplete_pairs, set())
 
     def test_sends_exchange_and_timeframe_grouped_messages(self) -> None:
         class FakeTelegram:
@@ -785,12 +848,14 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 self.signal = signal
                 self.last_scan_complete = False
                 self.last_scan_matched = False
+                self.last_no_match_reason = ""
 
             def scan(self, defer_notifications: bool = False) -> list[Signal]:
                 if not defer_notifications:
                     raise AssertionError("signals should be collected before sending")
                 self.last_scan_complete = True
                 self.last_scan_matched = True
+                self.last_no_match_reason = ""
                 return [self.signal]
 
         telegram = FakeTelegram()
@@ -842,11 +907,13 @@ class MultiExchangeScannerTests(unittest.TestCase):
                 self.store = None
                 self.last_scan_complete = False
                 self.last_scan_matched = False
+                self.last_no_match_reason = ""
 
             def scan(self, defer_notifications: bool = False) -> list[Signal]:
                 if not defer_notifications:
                     raise AssertionError("signals should be collected before sending")
                 self.last_scan_complete = True
+                self.last_no_match_reason = "Checked 1 completed symbol; RSI was not extreme."
                 return []
 
         telegram = FakeTelegram()
@@ -861,17 +928,59 @@ class MultiExchangeScannerTests(unittest.TestCase):
         self.assertEqual(
             telegram.messages,
             [
-                "Delta Exchange | 15-minute: No matching signals for configured symbols.",
-                "BingX | 15-minute: No matching signals for configured symbols.",
-                "Delta Exchange | 1-hour: No matching signals for configured symbols.",
-                "BingX | 1-hour: No matching signals for configured symbols.",
-                "Delta Exchange | daily: No matching signals for configured symbols.",
-                "BingX | daily: No matching signals for configured symbols.",
+                "Delta Exchange | 15-minute: No matching signals. Checked 1 completed "
+                "symbol; RSI was not extreme.",
+                "BingX | 15-minute: No matching signals. Checked 1 completed symbol; "
+                "RSI was not extreme.",
+                "Delta Exchange | 1-hour: No matching signals. Checked 1 completed "
+                "symbol; RSI was not extreme.",
+                "BingX | 1-hour: No matching signals. Checked 1 completed symbol; "
+                "RSI was not extreme.",
+                "Delta Exchange | daily: No matching signals. Checked 1 completed "
+                "symbol; RSI was not extreme.",
+                "BingX | daily: No matching signals. Checked 1 completed symbol; "
+                "RSI was not extreme.",
             ],
         )
 
 
 class ScannerTests(unittest.TestCase):
+    def test_complete_no_match_scan_records_symbol_specific_reasons(self) -> None:
+        class FakeMarketData:
+            def live_products(self) -> list[Product]:
+                return [Product("FLATUSD", "perpetual")]
+
+            def candles(self, symbol: str, now: int) -> list[tuple[int, float]]:
+                if symbol != "FLATUSD" or now <= 0:
+                    raise AssertionError("Unexpected product or candle request time")
+                return [(index * 900, 100.0) for index in range(MIN_CANDLES)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = AlertStore(Path(directory) / "state.sqlite3")
+            scanner = Scanner(
+                FakeMarketData(),
+                store,
+                None,
+                dry_run=True,
+                exchange="Delta Exchange",
+                timeframe="15m",
+            )
+
+            try:
+                self.assertEqual(scanner.scan(defer_notifications=True), [])
+                self.assertTrue(scanner.last_scan_complete)
+                self.assertFalse(scanner.last_scan_matched)
+                self.assertEqual(
+                    scanner.last_no_match_reason,
+                    "Checked 1 completed symbol; none met all conditions for either "
+                    "setup. FLATUSD: bullish blocked by RSI 50 is not > 70, MACD 0 "
+                    "is not > signal 0, Close 100 is not > EMA50 100; bearish "
+                    "blocked by RSI 50 is not < 30, MACD 0 is not < signal 0, "
+                    "Close 100 is not < EMA50 100",
+                )
+            finally:
+                store.close()
+
     def test_short_candle_history_logs_product_and_timeframe(self) -> None:
         class FakeMarketData:
             def live_products(self) -> list[Product]:

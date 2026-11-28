@@ -683,10 +683,10 @@ class AlertStore:
 
 def _format_messages(
     signals: list[Signal],
-    no_match_pairs: set[tuple[str, str]] | None = None,
+    no_match_reasons: dict[tuple[str, str], str] | None = None,
 ) -> list[tuple[str, list[Signal]]]:
     messages: list[tuple[str, list[Signal]]] = []
-    no_match_pairs = no_match_pairs or set()
+    no_match_reasons = no_match_reasons or {}
     for timeframe in ("15m", "1h", "1d"):
         for exchange in ("Delta Exchange", "BingX", "Binance USD-M Futures"):
             matching_signals = sorted(
@@ -698,11 +698,12 @@ def _format_messages(
                 key=lambda signal: signal.product.symbol,
             )
             if not matching_signals:
-                if (exchange, timeframe) in no_match_pairs:
+                reason = no_match_reasons.get((exchange, timeframe))
+                if reason:
                     messages.append(
                         (
                             f"{exchange} | {TIMEFRAME_LABELS[timeframe]}: "
-                            "No matching signals for configured symbols.",
+                            f"No matching signals. {reason}",
                             [],
                         )
                     )
@@ -739,6 +740,52 @@ def _format_messages(
     return messages
 
 
+def _no_match_reason(scans: list[ProductScan]) -> str:
+    symbol_reasons: list[str] = []
+    for result in sorted(scans, key=lambda scan: scan.product.symbol):
+        indicators = result.indicators
+        bullish_failures: list[str] = []
+        if not indicators.rsi > 70:
+            bullish_failures.append(f"RSI {indicators.rsi:.4g} is not > 70")
+        if not indicators.macd > indicators.macd_signal:
+            bullish_failures.append(
+                f"MACD {indicators.macd:.6g} is not > signal "
+                f"{indicators.macd_signal:.6g}"
+            )
+        if not indicators.close > indicators.ema50:
+            bullish_failures.append(
+                f"Close {indicators.close:.6g} is not > EMA50 "
+                f"{indicators.ema50:.6g}"
+            )
+
+        bearish_failures: list[str] = []
+        if not indicators.rsi < 30:
+            bearish_failures.append(f"RSI {indicators.rsi:.4g} is not < 30")
+        if not indicators.macd < indicators.macd_signal:
+            bearish_failures.append(
+                f"MACD {indicators.macd:.6g} is not < signal "
+                f"{indicators.macd_signal:.6g}"
+            )
+        if not indicators.close < indicators.ema50:
+            bearish_failures.append(
+                f"Close {indicators.close:.6g} is not < EMA50 "
+                f"{indicators.ema50:.6g}"
+            )
+
+        symbol_reasons.append(
+            f"{result.product.symbol}: bullish blocked by "
+            f"{', '.join(bullish_failures)}; bearish blocked by "
+            f"{', '.join(bearish_failures)}"
+        )
+
+    count = len(scans)
+    noun = "symbol" if count == 1 else "symbols"
+    return (
+        f"Checked {count} completed {noun}; none met all conditions for either "
+        "setup. " + " | ".join(symbol_reasons)
+    )
+
+
 class Scanner:
     def __init__(
         self,
@@ -759,6 +806,7 @@ class Scanner:
         self.timeframe = timeframe
         self.last_scan_complete = False
         self.last_scan_matched = False
+        self.last_no_match_reason = ""
 
     def _scan_product(self, product: Product, now: int) -> ProductScan | None:
         candles = self.market_data.candles(product.symbol, now)
@@ -784,6 +832,7 @@ class Scanner:
     def scan(self, defer_notifications: bool = False) -> list[Signal]:
         self.last_scan_complete = False
         self.last_scan_matched = False
+        self.last_no_match_reason = ""
         products = self.market_data.live_products()
         if not products:
             LOGGER.warning(
@@ -844,6 +893,8 @@ class Scanner:
             for matches in result.matches.values()
         )
         self.last_scan_complete = failures == 0 and skipped == 0
+        if self.last_scan_complete and not self.last_scan_matched:
+            self.last_no_match_reason = _no_match_reason(scans)
 
         new_signals: list[Signal] = []
         for result in scans:
@@ -903,28 +954,56 @@ class ExchangeScanError(RuntimeError):
 class MultiExchangeScanner:
     def __init__(self, scanners: list[Scanner]) -> None:
         self.scanners = scanners
+        self.pending_pairs: set[tuple[str, str]] = set()
+        self.last_incomplete_pairs: set[tuple[str, str]] = set()
 
     def scan(self, timeframes: set[str] | None = None) -> None:
         failures: list[str] = []
         new_signals: list[Signal] = []
-        selected_scanners = [
+        candidates = [
             scanner
             for scanner in self.scanners
             if timeframes is None or scanner.timeframe in timeframes
+        ]
+        pending_timeframes = {
+            timeframe for _, timeframe in self.pending_pairs
+        }
+        selected_scanners = [
+            scanner
+            for scanner in candidates
+            if scanner.timeframe not in pending_timeframes
+            or (scanner.exchange, scanner.timeframe) in self.pending_pairs
         ]
         for scanner in selected_scanners:
             try:
                 new_signals.extend(scanner.scan(defer_notifications=True))
             except (MarketDataApiError, TelegramError) as exc:
                 failures.append(f"{scanner.exchange} {scanner.timeframe}: {exc}")
+            if not scanner.last_scan_complete:
+                LOGGER.warning(
+                    "%s %s scan incomplete; queued for retry",
+                    scanner.exchange,
+                    scanner.timeframe,
+                )
 
-        no_match_pairs = {
+        selected_pairs = {
+            (scanner.exchange, scanner.timeframe) for scanner in selected_scanners
+        }
+        self.pending_pairs.difference_update(selected_pairs)
+        self.pending_pairs.update(
             (scanner.exchange, scanner.timeframe)
+            for scanner in selected_scanners
+            if not scanner.last_scan_complete
+        )
+        self.last_incomplete_pairs = set(self.pending_pairs)
+
+        no_match_reasons = {
+            (scanner.exchange, scanner.timeframe): scanner.last_no_match_reason
             for scanner in selected_scanners
             if scanner.last_scan_complete and not scanner.last_scan_matched
         }
-        if new_signals or no_match_pairs:
-            self._send_signals(new_signals, selected_scanners, no_match_pairs)
+        if new_signals or no_match_reasons:
+            self._send_signals(new_signals, selected_scanners, no_match_reasons)
         if failures:
             raise ExchangeScanError(
                 "One or more exchange scans failed: " + "; ".join(failures)
@@ -934,9 +1013,9 @@ class MultiExchangeScanner:
         self,
         signals: list[Signal],
         scanners: list[Scanner],
-        no_match_pairs: set[tuple[str, str]],
+        no_match_reasons: dict[tuple[str, str], str],
     ) -> None:
-        messages = _format_messages(signals, no_match_pairs)
+        messages = _format_messages(signals, no_match_reasons)
         dry_run = scanners[0].dry_run
         if dry_run:
             print("\n\n".join(message for message, _ in messages))

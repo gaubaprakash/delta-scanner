@@ -16,6 +16,8 @@ from scanner import (
     print_telegram_chat_ids,
 )
 
+INCOMPLETE_SCAN_RETRY_SECONDS = 60
+
 
 class ISTFormatter(logging.Formatter):
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
@@ -100,7 +102,16 @@ def main() -> int:
                     except (ExchangeScanError, MarketDataApiError, TelegramError) as exc:
                         logging.getLogger("bingx_scanner").error("Scan failed: %s", exc)
                     completed_at = time.time()
+                    incomplete_timeframes = {
+                        timeframe
+                        for _, timeframe in scanner.last_incomplete_pairs
+                    }
                     for timeframe in due_timeframes:
+                        if timeframe in incomplete_timeframes:
+                            next_scans[timeframe] = (
+                                completed_at + INCOMPLETE_SCAN_RETRY_SECONDS
+                            )
+                            continue
                         interval = TIMEFRAME_SECONDS[timeframe]
                         next_scans[timeframe] = (
                             int(completed_at // interval) + 1
