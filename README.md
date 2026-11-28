@@ -1,22 +1,23 @@
-# Delta Exchange and BingX multi-timeframe RSI/MACD/EMA50 scanner
+# Delta Exchange, BingX, and Binance multi-timeframe RSI/MACD/EMA50 scanner
 
-This standalone Python service scans configured Delta Exchange and BingX perpetual contracts using completed **15-minute, 1-hour, and daily candles**. It sends Telegram alerts when a contract newly meets either condition:
+This standalone Python service scans configured Delta Exchange, BingX, and Binance USD-M Futures perpetual contracts using completed **15-minute, 1-hour, and daily candles**. It sends Telegram alerts when a contract newly meets either condition:
 
 - RSI > 70, MACD line > MACD signal line, and candle close > EMA(50).
 - RSI < 30, MACD line < MACD signal line, and candle close < EMA(50).
 
 Bullish and bearish signals are sent in separate messages, labeled with their exchange and timeframe. It scans 15-minute candles every 15 minutes, hourly candles once per hour, and daily candles once per day. A signal is sent once while the condition remains true for that exchange, symbol, and timeframe; it can alert again if the condition first becomes false and later true again. Alert state is stored separately for each exchange and timeframe.
 
-The scanner uses both exchanges' public market-data endpoints and does not place trades or require an API key:
+The scanner uses the exchanges' public market-data endpoints and does not place trades or require an API key:
 
 - [Delta Exchange API documentation](https://docs.delta.exchange/)
 - [BingX API documentation](https://bingx-api.github.io/docs/)
+- [Binance USD-M Futures API documentation](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api)
 
 ## Requirements
 
 - Python 3.10 or newer.
 - A Telegram bot token and the destination chat ID.
-- Network access to Delta Exchange, BingX, and Telegram.
+- Network access to Delta Exchange, BingX, Binance, and Telegram.
 
 No third-party Python packages are needed.
 
@@ -43,31 +44,25 @@ Keep the bot token private. If it has been shared, revoke it with `@BotFather`, 
 
 ## Choose symbols
 
-The scanner reads symbol lists directly from the public Google Sheet:
+The scanner reads symbol lists from the `Symbol_Database` tab in the public Google Sheet:
 
 - https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/edit
 
-Use `NAME=comma,separated,symbols` rows in the sheet, or the `Record_ID`, `Exchange`,
-`Timeframe`, `Symbol`, `Is_Active`, and `Source_Key` table columns shown in the database
-layout. Sheet values override matching `.env` variables and are refreshed every 30 seconds.
-The Google Sheet is mandatory for symbol selection. A missing or unreadable symbol list for
-a timeframe is fail-closed: the scanner sends no update for that timeframe. Legacy `.env`
-symbol lists are not used.
+The Google Sheet is mandatory for symbol selection. Use `NAME=comma,separated,symbols` rows,
+or the `Record_ID`, `Exchange`, `Timeframe`, `Symbol`, `Is_Active`, and `Source_Key` table
+columns. Lists are refreshed every 30 seconds; a missing list fails closed and scans no
+contracts for that exchange/timeframe. Local `.env` symbol lists are not used.
+
+Binance scans USD-M USDT perpetuals. Sheet symbols such as `BTC-USDT` are normalized to
+Binance's `BTCUSDT` format. Only active symbols Binance lists as trading USDT perpetuals are
+scanned; indices and commodities unsupported by Binance USD-M Futures are skipped.
+Binance rows can be controlled independently with `Exchange=BINANCE`, `Timeframe=15M`, `1H`,
+or `1D`, and the matching `BINANCE_15M_SYMBOLS`, `BINANCE_1H_SYMBOLS`, or
+`BINANCE_1D_SYMBOLS` source key.
 
 To use another sheet, set `GOOGLE_SHEET_CSV_URL` in `.env` to its public CSV export URL.
-
-Set a comma-separated symbol list for each exchange and timeframe in `.env` as fallback:
-
-```dotenv
-DELTA_15M_SYMBOLS=BTCUSD,ETHUSD,SOLUSD,XRPUSD
-DELTA_1H_SYMBOLS=BTCUSD,ETHUSD,SOLUSD,XRPUSD
-DELTA_1D_SYMBOLS=BTCUSD,ETHUSD,SOLUSD,XRPUSD
-BINGX_15M_SYMBOLS=BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT
-BINGX_1H_SYMBOLS=BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT
-BINGX_1D_SYMBOLS=BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT
-```
-
-The scanner logs the symbols checked and warns if a configured symbol is not an active perpetual contract. If a timeframe's list is empty, that exchange scans all its live perpetual contracts for that timeframe. Legacy `DELTA_SYMBOLS` and `BINGX_SYMBOLS` values are used as fallbacks for any timeframe-specific list that is unset.
+The scanner logs the symbols checked and warns if a configured symbol is not an active
+perpetual contract.
 
 ## Run
 

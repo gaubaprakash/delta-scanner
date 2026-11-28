@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import csv
 import io
+import json
 import logging
 import os
 import sqlite3
@@ -37,11 +37,14 @@ TIMEFRAME_SYMBOL_ENV = {
     ("bingx", "15m"): "BINGX_15M_SYMBOLS",
     ("bingx", "1h"): "BINGX_1H_SYMBOLS",
     ("bingx", "1d"): "BINGX_1D_SYMBOLS",
+    ("binance", "15m"): "BINANCE_15M_SYMBOLS",
+    ("binance", "1h"): "BINANCE_1H_SYMBOLS",
+    ("binance", "1d"): "BINANCE_1D_SYMBOLS",
 }
 GOOGLE_SHEET_CSV_URL_DEFAULT = (
     "https://docs.google.com/spreadsheets/d/"
     "17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/"
-    "export?format=csv&gid=0"
+    "gviz/tq?tqx=out:csv&sheet=Symbol_Database"
 )
 _sheet_symbol_cache: dict[str, tuple[float, dict[str, set[str]]]] = {}
 
@@ -116,7 +119,12 @@ def _google_sheet_symbol_config() -> dict[str, set[str]]:
             if not source_key and exchange_index is not None and timeframe_index is not None:
                 exchange = row[exchange_index].strip().upper() if exchange_index < len(row) else ""
                 timeframe = row[timeframe_index].strip().lower() if timeframe_index < len(row) else ""
-                exchange_name = "DELTA" if exchange.startswith("DELTA") else "BINGX" if exchange.startswith("BINGX") else ""
+                exchange_name = (
+                    "DELTA" if exchange.startswith("DELTA")
+                    else "BINGX" if exchange.startswith("BINGX")
+                    else "BINANCE" if exchange.startswith("BINANCE")
+                    else ""
+                )
                 if exchange_name and timeframe in {"15m", "1h", "1d"}:
                     source_key = f"{exchange_name}_{timeframe.replace('m', 'M').replace('h', 'H').replace('d', 'D')}_SYMBOLS"
 
@@ -145,6 +153,17 @@ def _configured_symbols(
     sheet_config = _google_sheet_symbol_config()
     if variable in sheet_config:
         return sheet_config[variable]
+
+    if exchange == "binance":
+        bingx_variable = TIMEFRAME_SYMBOL_ENV[("bingx", timeframe)]
+        bingx_symbols = sheet_config.get(bingx_variable, set())
+        mapped_symbols = {
+            symbol.replace("-", "")
+            for symbol in bingx_symbols
+            if symbol.endswith("-USDT") and symbol.count("-") == 1
+        }
+        if mapped_symbols:
+            return mapped_symbols
 
     LOGGER.warning(
         "Google Sheet did not provide an active list for %s; no contracts will be scanned",
@@ -421,6 +440,119 @@ class DeltaExchangeClient:
         return sorted(candles.items())[-CANDLE_COUNT:]
 
 
+class BinanceUsdMFuturesClient:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 20,
+        timeframe: str = "15m",
+    ) -> None:
+        if timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.timeframe = timeframe
+        self.interval_seconds = TIMEFRAME_SECONDS[timeframe]
+
+    def _get_json(self, path: str, params: dict[str, Any]) -> Any:
+        url = f"{self.base_url}{path}"
+        if params:
+            url += f"?{urlencode(params)}"
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "delta-scanner/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                body = response.read()
+        except HTTPError as exc:
+            raise MarketDataApiError(
+                f"Binance USD-M API returned HTTP {exc.code} for {path}"
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise MarketDataApiError(
+                f"Binance USD-M API request failed for {path}: {exc}"
+            ) from exc
+
+        try:
+            return json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MarketDataApiError(
+                f"Binance USD-M API returned invalid JSON for {path}"
+            ) from exc
+
+    def live_products(self) -> list[Product]:
+        payload = self._get_json("/fapi/v1/exchangeInfo", {})
+        rows = payload.get("symbols") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise MarketDataApiError(
+                "Binance USD-M exchange info did not contain a symbols list"
+            )
+
+        configured_symbols = _configured_symbols(
+            "binance",
+            self.timeframe,
+            "BINANCE_SYMBOLS",
+        )
+        if configured_symbols is None:
+            return []
+        configured_symbols = {
+            symbol.replace("-", "")
+            for symbol in configured_symbols
+        }
+
+        products = [
+            Product(symbol=row["symbol"], contract_type="perpetual")
+            for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("symbol"), str)
+            and row["symbol"].upper() in configured_symbols
+            and row.get("status") == "TRADING"
+            and row.get("contractType") == "PERPETUAL"
+            and row.get("quoteAsset") == "USDT"
+        ]
+        live_symbols = {product.symbol.upper() for product in products}
+        unavailable_symbols = configured_symbols - live_symbols
+        if unavailable_symbols:
+            LOGGER.warning(
+                "Configured Binance USD-M symbols are not active USDT perpetuals: %s",
+                ", ".join(sorted(unavailable_symbols)),
+            )
+        return products
+
+    def candles(self, symbol: str, now: int) -> list[tuple[int, float]]:
+        rows = self._get_json(
+            "/fapi/v1/klines",
+            {"symbol": symbol, "interval": self.timeframe, "limit": CANDLE_COUNT},
+        )
+        if not isinstance(rows, list):
+            raise MarketDataApiError(
+                f"Binance USD-M candle response for {symbol} was not a list"
+            )
+
+        candles: dict[int, float] = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 7:
+                raise MarketDataApiError(
+                    f"Binance USD-M returned a malformed candle for {symbol}"
+                )
+            try:
+                open_time_ms = int(row[0])
+                close = float(row[4])
+                close_time_ms = int(row[6])
+            except (TypeError, ValueError) as exc:
+                raise MarketDataApiError(
+                    f"Binance USD-M returned a malformed candle for {symbol}"
+                ) from exc
+            if close_time_ms < now * 1000 and close > 0:
+                candles[open_time_ms // 1000] = close
+
+        return sorted(candles.items())[-CANDLE_COUNT:]
+
+
 class TelegramClient:
     def __init__(self, bot_token: str, chat_id: str, timeout: int = 20) -> None:
         self.bot_token = bot_token
@@ -599,7 +731,7 @@ def _format_messages(signals: list[Signal]) -> list[tuple[str, list[Signal]]]:
 class Scanner:
     def __init__(
         self,
-        market_data: BingXClient,
+        market_data: BingXClient | DeltaExchangeClient | BinanceUsdMFuturesClient,
         store: AlertStore,
         telegram: TelegramClient | None,
         dry_run: bool = False,
@@ -888,24 +1020,33 @@ def create_scanner(
         "BINGX_API_BASE_URL",
         "https://open-api.bingx.com",
     ).strip()
+    binance_base_url = os.environ.get(
+        "BINANCE_API_BASE_URL",
+        "https://fapi.binance.com",
+    ).strip()
     if not delta_base_url.startswith("https://"):
         raise ValueError("DELTA_API_BASE_URL must use HTTPS")
     if not bingx_base_url.startswith("https://"):
         raise ValueError("BINGX_API_BASE_URL must use HTTPS")
+    if not binance_base_url.startswith("https://"):
+        raise ValueError("BINANCE_API_BASE_URL must use HTTPS")
 
     directory = Path(__file__).parent
     state_paths = {
         "15m": {
             "Delta Exchange": "delta_scanner_state.sqlite3",
             "BingX": "bingx_scanner_state.sqlite3",
+            "Binance USD-M Futures": "binance_futures_scanner_state.sqlite3",
         },
         "1h": {
             "Delta Exchange": "delta_scanner_1h_state.sqlite3",
             "BingX": "bingx_scanner_1h_state.sqlite3",
+            "Binance USD-M Futures": "binance_futures_scanner_1h_state.sqlite3",
         },
         "1d": {
             "Delta Exchange": "delta_scanner_1d_state.sqlite3",
             "BingX": "bingx_scanner_1d_state.sqlite3",
+            "Binance USD-M Futures": "binance_futures_scanner_1d_state.sqlite3",
         },
     }
     stores: list[AlertStore] = []
@@ -914,6 +1055,7 @@ def create_scanner(
         for exchange, base_url, client_type in (
             ("Delta Exchange", delta_base_url, DeltaExchangeClient),
             ("BingX", bingx_base_url, BingXClient),
+            ("Binance USD-M Futures", binance_base_url, BinanceUsdMFuturesClient),
         ):
             store = AlertStore(directory / state_paths[timeframe][exchange])
             stores.append(store)

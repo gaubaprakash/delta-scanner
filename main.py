@@ -28,7 +28,7 @@ class ISTFormatter(logging.Formatter):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Scan Delta Exchange and BingX perpetuals for 15-minute "
+            "Scan Delta Exchange, BingX, and Binance USD-M perpetuals for 15-minute "
             "RSI/MACD/EMA50 signals, plus optional hourly and daily scans."
         )
     )

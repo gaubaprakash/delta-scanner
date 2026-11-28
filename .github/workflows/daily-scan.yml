@@ -26,10 +26,13 @@ jobs:
           path: |
             delta_scanner_state.sqlite3
             bingx_scanner_state.sqlite3
+            binance_futures_scanner_state.sqlite3
             delta_scanner_1h_state.sqlite3
             bingx_scanner_1h_state.sqlite3
+            binance_futures_scanner_1h_state.sqlite3
             delta_scanner_1d_state.sqlite3
             bingx_scanner_1d_state.sqlite3
+            binance_futures_scanner_1d_state.sqlite3
           key: scanner-state-${{ github.run_id }}
           restore-keys: |
             scanner-state-
@@ -41,7 +44,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/gviz/tq?tqx=out:csv&sheet=Symbol_Database
           DELTA_API_BASE_URL: https://api.india.delta.exchange
           BINGX_API_BASE_URL: https://open-api.bingx.com
 
@@ -51,7 +54,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/gviz/tq?tqx=out:csv&sheet=Symbol_Database
           DELTA_API_BASE_URL: https://api.india.delta.exchange
           BINGX_API_BASE_URL: https://open-api.bingx.com
 
@@ -61,7 +64,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/gviz/tq?tqx=out:csv&sheet=Symbol_Database
           DELTA_API_BASE_URL: https://api.india.delta.exchange
           BINGX_API_BASE_URL: https://open-api.bingx.com
 
@@ -72,8 +75,11 @@ jobs:
           path: |
             delta_scanner_state.sqlite3
             bingx_scanner_state.sqlite3
+            binance_futures_scanner_state.sqlite3
             delta_scanner_1h_state.sqlite3
             bingx_scanner_1h_state.sqlite3
+            binance_futures_scanner_1h_state.sqlite3
             delta_scanner_1d_state.sqlite3
             bingx_scanner_1d_state.sqlite3
+            binance_futures_scanner_1d_state.sqlite3
           key: scanner-state-${{ github.run_id }}

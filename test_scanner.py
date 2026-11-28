@@ -12,6 +12,7 @@ from indicators import Indicators, calculate_indicators, matching_setups
 from main import ISTFormatter
 from scanner import (
     AlertStore,
+    BinanceUsdMFuturesClient,
     BingXClient,
     DeltaExchangeClient,
     ExchangeScanError,
@@ -26,6 +27,7 @@ from scanner import (
     TelegramError,
     _configured_symbols,
     _format_messages,
+    _google_sheet_symbol_config,
     load_environment_file,
 )
 
@@ -342,7 +344,85 @@ class DeltaExchangeClientTests(unittest.TestCase):
             )
 
 
+class BinanceUsdMFuturesClientTests(unittest.TestCase):
+    def test_only_configured_active_usdt_perpetuals_are_included(self) -> None:
+        client = BinanceUsdMFuturesClient("https://example.invalid")
+        client._get_json = Mock(
+            return_value={
+                "symbols": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "quoteAsset": "USDT",
+                    },
+                    {
+                        "symbol": "ETHUSDT",
+                        "status": "TRADING",
+                        "contractType": "CURRENT_QUARTER",
+                        "quoteAsset": "USDT",
+                    },
+                    {
+                        "symbol": "SOLUSDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "quoteAsset": "USDT",
+                    },
+                ]
+            }
+        )
+
+        with patch(
+            "scanner._configured_symbols",
+            return_value={"BTC-USDT", "ETH-USDT"},
+        ):
+            self.assertEqual(
+                client.live_products(),
+                [Product(symbol="BTCUSDT", contract_type="perpetual")],
+            )
+
+    def test_requests_and_filters_completed_klines(self) -> None:
+        client = BinanceUsdMFuturesClient("https://example.invalid")
+        client._get_json = Mock(
+            return_value=[
+                [0, "1", "1", "1", "10", "0", 899999],
+                [900000, "1", "1", "1", "11", "0", 1799999],
+                [1800000, "1", "1", "1", "12", "0", 2699999],
+            ]
+        )
+
+        self.assertEqual(
+            client.candles("BTCUSDT", now=1800),
+            [(0, 10.0), (900, 11.0)],
+        )
+        client._get_json.assert_called_once_with(
+            "/fapi/v1/klines",
+            {"symbol": "BTCUSDT", "interval": "15m", "limit": 120},
+        )
+
+
 class GoogleSheetConfigurationTests(unittest.TestCase):
+    def test_binance_database_rows_parse_only_when_active(self) -> None:
+        sheet_csv = (
+            "Record_ID,Exchange,Timeframe,Symbol,Is_Active,Source_Key\n"
+            "SYM-058,BINANCE,15M,BTC-USDT,TRUE,BINANCE_15M_SYMBOLS\n"
+            "SYM-059,BINANCE,15M,ETH-USDT,FALSE,BINANCE_15M_SYMBOLS\n"
+        )
+        with patch(
+            "scanner._sheet_symbol_cache",
+            {},
+        ), patch.dict(
+            "os.environ",
+            {"GOOGLE_SHEET_CSV_URL": "https://example.invalid/sheet.csv"},
+        ), patch(
+            "scanner.urlopen",
+            return_value=BytesIO(sheet_csv.encode("utf-8")),
+        ):
+            self.assertEqual(
+                _google_sheet_symbol_config(),
+                {"BINANCE_15M_SYMBOLS": {"BTC-USDT"}},
+            )
+
     def test_missing_sheet_value_fail_closes_instead_of_using_env_or_all_symbols(self) -> None:
         with patch.dict(
             "os.environ",
@@ -370,6 +450,38 @@ class GoogleSheetConfigurationTests(unittest.TestCase):
             self.assertEqual(
                 _configured_symbols("delta", "1h", "DELTA_SYMBOLS"),
                 {"ETHUSD", "SOLUSD"},
+            )
+
+    def test_binance_symbols_are_mapped_from_sheet_bingx_usdt_pairs(self) -> None:
+        sheet_config = {
+            "BINGX_15M_SYMBOLS": {
+                "BTC-USDT",
+                "ETH-USDT",
+                "NIFTY 50",
+                "OIL BRENT",
+            }
+        }
+        with patch(
+            "scanner._google_sheet_symbol_config",
+            return_value=sheet_config,
+        ):
+            self.assertEqual(
+                _configured_symbols("binance", "15m", "BINANCE_SYMBOLS"),
+                {"BTCUSDT", "ETHUSDT"},
+            )
+
+    def test_explicit_binance_sheet_symbols_override_bingx_mapping(self) -> None:
+        sheet_config = {
+            "BINANCE_1H_SYMBOLS": {"SOLUSDT"},
+            "BINGX_1H_SYMBOLS": {"BTC-USDT"},
+        }
+        with patch(
+            "scanner._google_sheet_symbol_config",
+            return_value=sheet_config,
+        ):
+            self.assertEqual(
+                _configured_symbols("binance", "1h", "BINANCE_SYMBOLS"),
+                {"SOLUSDT"},
             )
 
     def test_legacy_environment_symbols_are_not_used(self) -> None:
