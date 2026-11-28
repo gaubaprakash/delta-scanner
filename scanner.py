@@ -56,9 +56,10 @@ def _is_active(value: str) -> bool:
 
 def _google_sheet_symbol_config() -> dict[str, set[str]]:
     now = time.time()
-    url = os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip()
-    if not url:
-        return {}
+    url = os.environ.get(
+        "GOOGLE_SHEET_CSV_URL",
+        GOOGLE_SHEET_CSV_URL_DEFAULT,
+    ).strip()
 
     cached = _sheet_symbol_cache.get("symbols")
     if cached and now - cached[0] < 30:
@@ -145,17 +146,11 @@ def _configured_symbols(
     if variable in sheet_config:
         return sheet_config[variable]
 
-    if os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip():
-        LOGGER.warning(
-            "Google Sheet did not provide an active list for %s; no contracts will be scanned",
-            variable,
-        )
-        return None
-
-    value = os.environ.get(variable)
-    if value is None:
-        value = os.environ.get(legacy_name, "")
-    return {symbol.strip().upper() for symbol in value.split(",") if symbol.strip()}
+    LOGGER.warning(
+        "Google Sheet did not provide an active list for %s; no contracts will be scanned",
+        variable,
+    )
+    return None
 
 
 class MarketDataApiError(RuntimeError):

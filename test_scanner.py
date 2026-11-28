@@ -163,7 +163,10 @@ class BingXClientTests(unittest.TestCase):
             }
         )
 
-        with patch.dict("os.environ", {"BINGX_SYMBOLS": ""}):
+        with patch(
+            "scanner._configured_symbols",
+            return_value=set(),
+        ):
             self.assertEqual(
                 client.live_products(),
                 [Product(symbol="BTC-USDT", contract_type="perpetual")],
@@ -182,7 +185,10 @@ class BingXClientTests(unittest.TestCase):
             }
         )
 
-        with patch.dict("os.environ", {"BINGX_SYMBOLS": "btc-usdt,NOT-LIVE"}):
+        with patch(
+            "scanner._configured_symbols",
+            return_value={"BTC-USDT", "NOT-LIVE"},
+        ):
             self.assertEqual(
                 client.live_products(),
                 [Product(symbol="BTC-USDT", contract_type="perpetual")],
@@ -200,12 +206,9 @@ class BingXClientTests(unittest.TestCase):
             }
         )
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BINGX_SYMBOLS": "BTC-USDT",
-                "BINGX_1H_SYMBOLS": "ETH-USDT",
-            },
+        with patch(
+            "scanner._configured_symbols",
+            return_value={"ETH-USDT"},
         ):
             self.assertEqual(
                 client.live_products(),
@@ -289,7 +292,10 @@ class DeltaExchangeClientTests(unittest.TestCase):
             }
         )
 
-        with patch.dict("os.environ", {"DELTA_SYMBOLS": "BTCUSD,NOTLIVE"}):
+        with patch(
+            "scanner._configured_symbols",
+            return_value={"BTCUSD", "NOTLIVE"},
+        ):
             self.assertEqual(
                 client.live_products(),
                 [Product(symbol="BTCUSD", contract_type="perpetual")],
@@ -317,9 +323,9 @@ class DeltaExchangeClientTests(unittest.TestCase):
             }
         )
 
-        with patch.dict(
-            "os.environ",
-            {"DELTA_SYMBOLS": "BTCUSD", "DELTA_1H_SYMBOLS": "ETHUSD"},
+        with patch(
+            "scanner._configured_symbols",
+            return_value={"ETHUSD"},
         ):
             self.assertEqual(
                 client.live_products(),
@@ -357,7 +363,7 @@ class GoogleSheetConfigurationTests(unittest.TestCase):
                 {"ETHUSD", "SOLUSD"},
             )
 
-    def test_environment_fallback_is_used_without_sheet_value(self) -> None:
+    def test_legacy_environment_symbols_are_not_used(self) -> None:
         with patch.dict(
             "os.environ",
             {"DELTA_1H_SYMBOLS": "ETHUSD,SOLUSD"},
@@ -365,9 +371,8 @@ class GoogleSheetConfigurationTests(unittest.TestCase):
             "scanner._google_sheet_symbol_config",
             return_value={},
         ):
-            self.assertEqual(
-                _configured_symbols("delta", "1h", "DELTA_SYMBOLS"),
-                {"ETHUSD", "SOLUSD"},
+            self.assertIsNone(
+                _configured_symbols("delta", "1h", "DELTA_SYMBOLS")
             )
 
 

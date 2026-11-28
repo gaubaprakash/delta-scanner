@@ -50,9 +50,9 @@ The scanner reads symbol lists directly from the public Google Sheet:
 Use `NAME=comma,separated,symbols` rows in the sheet, or the `Record_ID`, `Exchange`,
 `Timeframe`, `Symbol`, `Is_Active`, and `Source_Key` table columns shown in the database
 layout. Sheet values override matching `.env` variables and are refreshed every 30 seconds.
-When `GOOGLE_SHEET_CSV_URL` is set, a missing symbol list for a timeframe is fail-closed:
-the scanner sends no update for that timeframe. `.env` lists are only fallback values when
-the sheet URL is not configured.
+The Google Sheet is mandatory for symbol selection. A missing or unreadable symbol list for
+a timeframe is fail-closed: the scanner sends no update for that timeframe. Legacy `.env`
+symbol lists are not used.
 
 To use another sheet, set `GOOGLE_SHEET_CSV_URL` in `.env` to its public CSV export URL.
 

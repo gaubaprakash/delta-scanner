@@ -41,10 +41,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
           DELTA_API_BASE_URL: https://api.india.delta.exchange
-          DELTA_15M_SYMBOLS: BTCUSD,ETHUSD,SOLUSD,XRPUSD,XAUTUSD,SLVONUSD,QQQXUSD,OILUSD
           BINGX_API_BASE_URL: https://open-api.bingx.com
-          BINGX_15M_SYMBOLS: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,Nifty 50,XAUUSD,XAGUSD,OIL BRENT,OIL WTI,NATURAL GAS,NIFTY BANK
 
       - name: Run hourly scan
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 * * * *'
@@ -52,10 +51,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
           DELTA_API_BASE_URL: https://api.india.delta.exchange
-          DELTA_1H_SYMBOLS: BTCUSD,ETHUSD,SOLUSD,XRPUSD,XAUTUSD,SLVONUSD,QQQXUSD,OILUSD
           BINGX_API_BASE_URL: https://open-api.bingx.com
-          BINGX_1H_SYMBOLS: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,Nifty 50,XAUUSD,XAGUSD,OIL BRENT,OIL WTI,NATURAL GAS,NIFTY BANK
 
       - name: Run daily scan
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * *'
@@ -63,10 +61,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEET_CSV_URL: https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/export?format=csv&gid=0
           DELTA_API_BASE_URL: https://api.india.delta.exchange
-          DELTA_1D_SYMBOLS: BTCUSD,ETHUSD,SOLUSD,XRPUSD,XAUTUSD,SLVONUSD,QQQXUSD,OILUSD
           BINGX_API_BASE_URL: https://open-api.bingx.com
-          BINGX_1D_SYMBOLS: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,Nifty 50,XAUUSD,XAGUSD,OIL BRENT,OIL WTI,NATURAL GAS,NIFTY BANK
 
       - name: Save scanner state
         if: always()
