@@ -74,6 +74,15 @@ class IndicatorTests(unittest.TestCase):
 
 
 class BingXClientTests(unittest.TestCase):
+    def test_api_requests_identify_the_scanner_user_agent(self) -> None:
+        client = BingXClient("https://example.invalid")
+        response = BytesIO(b'{"code":0,"data":[]}')
+        with patch("scanner.urlopen", return_value=response) as urlopen_mock:
+            self.assertEqual(client._get_json("/contracts", {}), {"code": 0, "data": []})
+
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), "delta-scanner/1.0")
+
     def test_only_completed_candles_are_used(self) -> None:
         client = BingXClient("https://example.invalid")
         client._get_json = Mock(

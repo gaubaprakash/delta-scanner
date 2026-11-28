@@ -227,7 +227,13 @@ class BingXClient:
     def _get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         query = urlencode(params)
         url = f"{self.base_url}{path}?{query}"
-        request = Request(url, headers={"Accept": "application/json"})
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "delta-scanner/1.0",
+            },
+        )
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 body = response.read()
