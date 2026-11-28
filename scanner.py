@@ -908,27 +908,8 @@ class MultiExchangeScanner:
             except (MarketDataApiError, TelegramError) as exc:
                 failures.append(f"{scanner.exchange} {scanner.timeframe}: {exc}")
 
-        no_match_timeframes = [
-            timeframe
-            for timeframe in ("15m", "1h", "1d")
-            if any(scanner.timeframe == timeframe for scanner in selected_scanners)
-            and all(
-                scanner.last_scan_complete
-                for scanner in selected_scanners
-                if scanner.timeframe == timeframe
-            )
-            and not any(
-                scanner.last_scan_matched
-                for scanner in selected_scanners
-                if scanner.timeframe == timeframe
-            )
-        ]
-        if new_signals or no_match_timeframes:
-            self._send_signals(
-                new_signals,
-                selected_scanners,
-                no_match_timeframes,
-            )
+        if new_signals:
+            self._send_signals(new_signals, selected_scanners)
         if failures:
             raise ExchangeScanError(
                 "One or more exchange scans failed: " + "; ".join(failures)
@@ -938,12 +919,8 @@ class MultiExchangeScanner:
         self,
         signals: list[Signal],
         scanners: list[Scanner],
-        no_match_timeframes: list[str],
     ) -> None:
         messages = _format_messages(signals)
-        for timeframe in no_match_timeframes:
-            label = {"15m": "15M", "1h": "1HR", "1d": "1D"}[timeframe]
-            messages.append((f"No matching data on {label} TF", []))
         dry_run = scanners[0].dry_run
         if dry_run:
             print("\n\n".join(message for message, _ in messages))

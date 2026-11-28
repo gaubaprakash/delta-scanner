@@ -806,7 +806,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
         self.assertEqual(scanners[0].store.active, [delta_signal])
         self.assertEqual(scanners[1].store.active, [bingx_signal])
 
-    def test_sends_no_match_status_for_each_completed_timeframe(self) -> None:
+    def test_sends_no_messages_when_no_signals_match(self) -> None:
         class FakeTelegram:
             def __init__(self) -> None:
                 self.messages: list[str] = []
@@ -839,14 +839,7 @@ class MultiExchangeScannerTests(unittest.TestCase):
 
         MultiExchangeScanner(scanners).scan()
 
-        self.assertEqual(
-            telegram.messages,
-            [
-                "No matching data on 15M TF",
-                "No matching data on 1HR TF",
-                "No matching data on 1D TF",
-            ],
-        )
+        self.assertEqual(telegram.messages, [])
 
 
 class ScannerTests(unittest.TestCase):
