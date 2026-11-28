@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import csv
+import io
 import logging
 import os
 import sqlite3
@@ -36,14 +38,120 @@ TIMEFRAME_SYMBOL_ENV = {
     ("bingx", "1h"): "BINGX_1H_SYMBOLS",
     ("bingx", "1d"): "BINGX_1D_SYMBOLS",
 }
+GOOGLE_SHEET_CSV_URL_DEFAULT = (
+    "https://docs.google.com/spreadsheets/d/"
+    "17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/"
+    "export?format=csv&gid=0"
+)
+_sheet_symbol_cache: dict[str, tuple[float, dict[str, set[str]]]] = {}
+
+
+def _normalized_header(value: str) -> str:
+    return value.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _is_active(value: str) -> bool:
+    return value.strip().lower() in {"true", "yes", "1", "active", "checked", "y"}
+
+
+def _google_sheet_symbol_config() -> dict[str, set[str]]:
+    now = time.time()
+    url = os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip()
+    if not url:
+        return {}
+
+    cached = _sheet_symbol_cache.get("symbols")
+    if cached and now - cached[0] < 30:
+        return cached[1]
+
+    request = Request(url, headers={"User-Agent": "delta-scanner/1.0"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            text = response.read().decode("utf-8-sig")
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        LOGGER.warning("Could not refresh symbols from Google Sheet: %s", exc)
+        return {}
+
+    config: dict[str, set[str]] = {}
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        _sheet_symbol_cache["symbols"] = (now, config)
+        return config
+
+    first_row = [cell.strip() for cell in rows[0]]
+    env_names = set(TIMEFRAME_SYMBOL_ENV.values())
+
+    if len(first_row) == 1 and "=" in first_row[0]:
+        for row in rows:
+            if not row or "=" not in row[0]:
+                continue
+            name, value = row[0].split("=", 1)
+            name = name.strip()
+            if name in env_names:
+                config[name] = {
+                    symbol.strip().upper()
+                    for symbol in value.split(",")
+                    if symbol.strip()
+                }
+    elif any(header.lower().replace("_", " ").replace("-", " ") in {
+        "source key", "exchange", "timeframe", "symbol"
+    } for header in first_row):
+        headers = {_normalized_header(header): index for index, header in enumerate(first_row)}
+        source_key_index = headers.get("source_key")
+        exchange_index = headers.get("exchange")
+        timeframe_index = headers.get("timeframe")
+        symbol_index = headers.get("symbol")
+        active_index = headers.get("is_active")
+
+        for row in rows[1:]:
+            if active_index is not None and active_index < len(row) and not _is_active(row[active_index]):
+                continue
+
+            source_key = (
+                row[source_key_index].strip()
+                if source_key_index is not None and source_key_index < len(row)
+                else ""
+            )
+            if not source_key and exchange_index is not None and timeframe_index is not None:
+                exchange = row[exchange_index].strip().upper() if exchange_index < len(row) else ""
+                timeframe = row[timeframe_index].strip().lower() if timeframe_index < len(row) else ""
+                exchange_name = "DELTA" if exchange.startswith("DELTA") else "BINGX" if exchange.startswith("BINGX") else ""
+                if exchange_name and timeframe in {"15m", "1h", "1d"}:
+                    source_key = f"{exchange_name}_{timeframe.replace('m', 'M').replace('h', 'H').replace('d', 'D')}_SYMBOLS"
+
+            if source_key not in env_names or symbol_index is None or symbol_index >= len(row):
+                continue
+            symbol = row[symbol_index].strip()
+            if symbol:
+                config.setdefault(source_key, set()).add(symbol.upper())
+
+    _sheet_symbol_cache["symbols"] = (now, config)
+    return config
+
+
 SETUP_LABELS = {
     "overbought_bullish": "RSI > 70 and bullish MACD",
     "oversold_bearish": "RSI < 30 and bearish MACD",
 }
 
 
-def _configured_symbols(exchange: str, timeframe: str, legacy_name: str) -> set[str]:
+def _configured_symbols(
+    exchange: str,
+    timeframe: str,
+    legacy_name: str,
+) -> set[str] | None:
     variable = TIMEFRAME_SYMBOL_ENV[(exchange, timeframe)]
+    sheet_config = _google_sheet_symbol_config()
+    if variable in sheet_config:
+        return sheet_config[variable]
+
+    if os.environ.get("GOOGLE_SHEET_CSV_URL", "").strip():
+        LOGGER.warning(
+            "Google Sheet did not provide an active list for %s; no contracts will be scanned",
+            variable,
+        )
+        return None
+
     value = os.environ.get(variable)
     if value is None:
         value = os.environ.get(legacy_name, "")
@@ -152,6 +260,8 @@ class BingXClient:
             raise MarketDataApiError("BingX contract response did not contain a data list")
 
         configured_symbols = _configured_symbols("bingx", self.timeframe, "BINGX_SYMBOLS")
+        if configured_symbols is None:
+            return []
         products = []
         for row in rows:
             if not isinstance(row, dict):
@@ -250,6 +360,8 @@ class DeltaExchangeClient:
             raise MarketDataApiError("Delta Exchange product response did not contain a result list")
 
         configured_symbols = _configured_symbols("delta", self.timeframe, "DELTA_SYMBOLS")
+        if configured_symbols is None:
+            return []
         products = []
         for row in rows:
             if not isinstance(row, dict):

@@ -24,6 +24,7 @@ from scanner import (
     Signal,
     TelegramClient,
     TelegramError,
+    _configured_symbols,
     _format_messages,
     load_environment_file,
 )
@@ -323,6 +324,50 @@ class DeltaExchangeClientTests(unittest.TestCase):
             self.assertEqual(
                 client.live_products(),
                 [Product(symbol="ETHUSD", contract_type="perpetual")],
+            )
+
+
+class GoogleSheetConfigurationTests(unittest.TestCase):
+    def test_missing_sheet_value_fail_closes_instead_of_using_env_or_all_symbols(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "GOOGLE_SHEET_CSV_URL": "https://example.invalid/sheet.csv",
+                "DELTA_1H_SYMBOLS": "BTCUSD",
+            },
+        ), patch(
+            "scanner._google_sheet_symbol_config",
+            return_value={},
+        ):
+            self.assertIsNone(
+                _configured_symbols("delta", "1h", "DELTA_SYMBOLS")
+            )
+
+    def test_sheet_config_overrides_matching_environment_fallback(self) -> None:
+        sheet_config = {"DELTA_1H_SYMBOLS": {"ETHUSD", "SOLUSD"}}
+        with patch.dict(
+            "os.environ",
+            {"DELTA_1H_SYMBOLS": "BTCUSD"},
+        ), patch(
+            "scanner._google_sheet_symbol_config",
+            return_value=sheet_config,
+        ):
+            self.assertEqual(
+                _configured_symbols("delta", "1h", "DELTA_SYMBOLS"),
+                {"ETHUSD", "SOLUSD"},
+            )
+
+    def test_environment_fallback_is_used_without_sheet_value(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"DELTA_1H_SYMBOLS": "ETHUSD,SOLUSD"},
+        ), patch(
+            "scanner._google_sheet_symbol_config",
+            return_value={},
+        ):
+            self.assertEqual(
+                _configured_symbols("delta", "1h", "DELTA_SYMBOLS"),
+                {"ETHUSD", "SOLUSD"},
             )
 
 

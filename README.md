@@ -43,7 +43,20 @@ Keep the bot token private. If it has been shared, revoke it with `@BotFather`, 
 
 ## Choose symbols
 
-Set a comma-separated symbol list for each exchange and timeframe in `.env`:
+The scanner reads symbol lists directly from the public Google Sheet:
+
+- https://docs.google.com/spreadsheets/d/17UN3-QGibe42Uin-UuehGyQFj2qw9AiIBxa9dF3oqxE/edit
+
+Use `NAME=comma,separated,symbols` rows in the sheet, or the `Record_ID`, `Exchange`,
+`Timeframe`, `Symbol`, `Is_Active`, and `Source_Key` table columns shown in the database
+layout. Sheet values override matching `.env` variables and are refreshed every 30 seconds.
+When `GOOGLE_SHEET_CSV_URL` is set, a missing symbol list for a timeframe is fail-closed:
+the scanner sends no update for that timeframe. `.env` lists are only fallback values when
+the sheet URL is not configured.
+
+To use another sheet, set `GOOGLE_SHEET_CSV_URL` in `.env` to its public CSV export URL.
+
+Set a comma-separated symbol list for each exchange and timeframe in `.env` as fallback:
 
 ```dotenv
 DELTA_15M_SYMBOLS=BTCUSD,ETHUSD,SOLUSD,XRPUSD
